@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -225,6 +226,69 @@ def _merge_ranges(ranges: list[dict], merge_gap: float) -> list[dict]:
     return merged
 
 
+# Chime marking where an ad was cut: two soft bell notes (A5 then E6) with a short lead-in.
+CHIME_SECONDS = 1.7
+_CHIME_ENCODERS = {"mp3": ("libmp3lame", "128k"), "aac": ("aac", "96k")}
+
+
+def _chime_expression(volume: float) -> str:
+    """ffmpeg aevalsrc expression for the chime: decaying bell notes with a 3 ms attack."""
+    def note(freq: float, start: float) -> str:
+        u = f"(t-{start})"
+        partials = f"(sin(2*PI*{freq}*{u})+0.35*sin(4*PI*{freq}*{u})+0.12*sin(6*PI*{freq}*{u}))"
+        return f"if(gte(t\\,{start})\\,min(1\\,{u}*300)*exp(-4.5*{u})*{partials}\\,0)"
+    return f"{volume}*0.45*({note(880, 0.15)}+{note(1318.51, 0.40)})"
+
+
+def audio_stream_info(file_path: str) -> dict | None:
+    """Codec, sample rate and channels of the first audio stream, and whether there is real video."""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "stream=codec_type,codec_name,sample_rate,channels",
+        "-of", "json", file_path,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        streams = json.loads(result.stdout or "{}").get("streams", [])
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    audio = next((st for st in streams if st.get("codec_type") == "audio"), None)
+    if audio is None:
+        return None
+    return {
+        "codec": audio.get("codec_name"),
+        "sample_rate": int(audio.get("sample_rate") or 0),
+        "channels": int(audio.get("channels") or 0),
+        "has_video": has_real_video_stream(file_path),
+    }
+
+
+def make_chime(output_path: str, info: dict, volume: float = 0.5) -> float | None:
+    """Write the chime to ``output_path`` in the episode's codec, sample rate and channel count.
+
+    Matching the episode means it can be joined to the cut audio without re-encoding anything.
+    Returns the chime's length in seconds, or None if it could not be made.
+    """
+    encoder, bitrate = _CHIME_ENCODERS[info["codec"]]
+    volume = min(max(float(volume), 0.05), 0.9)   # 0.9 keeps the two overlapping notes from clipping
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"aevalsrc={_chime_expression(volume)}:s={info['sample_rate']}:d={CHIME_SECONDS}",
+        "-ac", str(info["channels"]), "-ar", str(info["sample_rate"]),
+        "-c:a", encoder, "-b:a", bitrate,
+        output_path,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            logger.warning("Could not make the chime: %s", result.stderr[-300:])
+            return None
+        return get_duration(output_path)
+    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as exc:
+        logger.warning("Could not make the chime: %s", exc)
+        return None
+
+
 def cut_segments(
     input_path: str,
     segments: list[dict],
@@ -233,6 +297,9 @@ def cut_segments(
     snap_to_silence: bool = False,
     snap_window: float = 3.0,
     applied: list | None = None,
+    chime: bool = False,
+    chime_volume: float = 0.5,
+    report: dict | None = None,
 ) -> str:
     """Remove ad segments from a media file using ffmpeg concat demuxer.
 
@@ -251,6 +318,13 @@ def cut_segments(
 
     If ``applied`` is a list, it is filled with the ranges that were actually removed
     (``{"start", "end"}`` in seconds on the original timeline) after merging and snapping.
+
+    With ``chime`` a short chime is inserted at every cut (including one at the very start or end
+    of the episode) so a listener can hear where an ad was removed. Ads that were merged into one
+    cut get one chime. It is only added to audio-only mp3 and aac files; for anything else the
+    cut is made without it. Embedded cover art is left out of the result when a chime is added.
+    If ``report`` is a dict it receives ``chime_seconds`` and ``chime_count``
+    when chimes were inserted.
 
     If output_path is None, overwrites the input file.
     Returns the final output path.
@@ -278,19 +352,29 @@ def cut_segments(
                 snapped.append({"start": start, "end": end})
         merged = _merge_ranges(snapped, merge_gap)
 
-    # Invert to get keep ranges
-    keep_ranges = []
+    # Invert to get keep ranges, noting where each cut falls so a chime can go there
+    plan: list[tuple] = []   # ("keep", start, end) or ("cut",)
     prev_end = 0.0
     for seg in merged:
         if seg["start"] > prev_end:
-            keep_ranges.append((prev_end, seg["start"]))
+            plan.append(("keep", prev_end, seg["start"]))
+        plan.append(("cut",))
         prev_end = seg["end"]
     if prev_end < total_duration:
-        keep_ranges.append((prev_end, total_duration))
+        plan.append(("keep", prev_end, total_duration))
+    keep_ranges = [(item[1], item[2]) for item in plan if item[0] == "keep"]
 
     if not keep_ranges:
         logger.warning("All content would be cut — skipping")
         return input_path
+
+    chime_info = None
+    if chime:
+        info = audio_stream_info(input_path)
+        if info and not info["has_video"] and info["codec"] in _CHIME_ENCODERS and info["sample_rate"] > 0:
+            chime_info = info
+        else:
+            logger.info("Not adding a chime to %s: only audio-only mp3 and aac files are supported", input_path)
 
     if applied is not None:
         applied[:] = [{"start": m["start"], "end": m["end"]} for m in merged]
@@ -313,6 +397,9 @@ def cut_segments(
                 "-i", input_path,
                 "-ss", str(start),
                 "-to", str(end),
+                # With a chime, keep only the audio: the chime file has no embedded cover art, and
+                # pieces with different streams cannot be joined. (Feeds serve the artwork anyway.)
+                *(["-map", "0:a:0"] if chime_info is not None else []),
                 "-c", "copy",
                 seg_path,
             ]
@@ -322,13 +409,33 @@ def cut_segments(
                 raise RuntimeError(f"ffmpeg segment extraction failed for range {start}-{end}")
             segment_files.append(seg_path)
 
-        # Create concat list file
+        chime_path = None
+        chime_length = None
+        if chime_info is not None:
+            chime_path = os.path.join(tmpdir, f"chime{ext}")
+            chime_length = make_chime(chime_path, chime_info, chime_volume)
+            if chime_length is None:
+                chime_path = None   # carry on without it rather than fail the cut
+
+        # Create concat list file: the kept pieces in order, with a chime at each cut
+        def _concat_line(path: str) -> str:
+            # ffmpeg concat requires forward slashes and escaped single quotes
+            escaped = path.replace("\\", "/").replace("'", "'\\''")
+            return f"file '{escaped}'\n"
+
         list_path = os.path.join(tmpdir, "concat.txt")
+        chimes_added = 0
+        pieces = iter(segment_files)
         with open(list_path, "w") as f:
-            for seg_path in segment_files:
-                # ffmpeg concat requires forward slashes and escaped single quotes
-                escaped = seg_path.replace("\\", "/").replace("'", "'\\''")
-                f.write(f"file '{escaped}'\n")
+            for item in plan:
+                if item[0] == "keep":
+                    f.write(_concat_line(next(pieces)))
+                elif chime_path is not None:
+                    f.write(_concat_line(chime_path))
+                    chimes_added += 1
+        if report is not None and chimes_added:
+            report["chime_seconds"] = chime_length
+            report["chime_count"] = chimes_added
 
         # Concat to temp file (not directly to output)
         temp_output = os.path.join(tmpdir, f"output{ext}")

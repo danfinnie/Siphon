@@ -216,6 +216,22 @@ class TestEpisodePage:
         assert audio.status_code == 200 and audio.content == b"CLEANAUDIO"
 
 
+class TestChimeInPage:
+    CHIMED = {**AUDIT, "chime_seconds": 1.7, "chime_count": 1}
+
+    async def test_note_and_timeline_data_when_chimes_were_added(self, app, config, client):
+        seed(app, config, audit=self.CHIMED)
+        text = (await client.get("/ui/episode", params={"feed": "show", "id": "ep1"})).text
+        assert "marks each cut in the cleaned audio" in text
+        assert '"chime": 1.7' in text                      # the script needs it to map between the two timelines
+
+    async def test_no_note_without_chimes(self, app, config, client):
+        seed(app, config)
+        text = (await client.get("/ui/episode", params={"feed": "show", "id": "ep1"})).text
+        assert "marks each cut" not in text
+        assert '"chime": 0.0' in text
+
+
 class TestEpisodeAudio:
     async def test_serves_cleaned_and_original(self, app, config, client):
         seed(app, config)

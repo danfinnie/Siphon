@@ -62,6 +62,14 @@ def removed_ranges(audit: dict) -> list[tuple[float, float]]:
     return [(a, b) for a, b in merged]
 
 
+def chime_seconds(audit: dict) -> float:
+    """Length of the chime inserted at each cut (0 when no chimes were added)."""
+    try:
+        return max(0.0, float(audit.get("chime_seconds") or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def build_cut_list(audit: dict) -> list[dict]:
     """One entry per removed chunk, with its label, confidence and splice position.
 
@@ -71,6 +79,7 @@ def build_cut_list(audit: dict) -> list[dict]:
         (rng, seg) for seg in audit.get("high_confidence") or []
         if isinstance(seg, dict) and (rng := _as_range(seg))
     ]
+    chime = chime_seconds(audit)
     cuts = []
     removed_before = 0.0
     for start, end in removed_ranges(audit):
@@ -89,7 +98,9 @@ def build_cut_list(audit: dict) -> list[dict]:
             "label": " + ".join(labels) if labels else "cut",
             "confidence": max(confidences) if confidences else None,
             "parts": len(matches),
-            "clean_at": start - removed_before,
+            # where the splice falls on the cleaned timeline; each earlier cut left a chime behind
+            "clean_at": start - removed_before + chime * len(cuts),
+            "chime": chime,
         })
         removed_before += end - start
     return cuts
@@ -208,7 +219,10 @@ def summarize(audit: dict, episode: dict, cuts: list[dict]) -> dict:
 
 def clean_time_map(cuts: list[dict]) -> list[dict]:
     """Compact data the page script uses to convert between the two timelines."""
-    return [{"start": c["start"], "end": c["end"], "clean_at": c["clean_at"]} for c in cuts]
+    return [
+        {"start": c["start"], "end": c["end"], "clean_at": c["clean_at"], "chime": c.get("chime", 0.0)}
+        for c in cuts
+    ]
 
 
 def format_clock(seconds) -> str:

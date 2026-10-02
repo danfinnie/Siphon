@@ -191,7 +191,8 @@ class TestQualityOptionsReachTheirTargets:
     @patch("siphon.llm_trim.transcribe")
     def test_options_are_passed_to_transcribe_and_cut(self, mock_transcribe, mock_detect, mock_cut):
         feed, _ = _make_feed()
-        llm = LLMConfig(whisper_vad_filter=True, snap_cuts_to_silence=True, snap_window_seconds=2.0)
+        llm = LLMConfig(whisper_vad_filter=True, snap_cuts_to_silence=True, snap_window_seconds=2.0,
+                        chime_on_cut=True, chime_volume=0.4)
         mock_transcribe.return_value = {
             "text": "Welcome. Squarespace!", "segments": [], "language": "en", "duration": 300.0,
         }
@@ -204,6 +205,8 @@ class TestQualityOptionsReachTheirTargets:
         assert mock_transcribe.call_args.kwargs["vad_filter"] is True
         assert mock_cut.call_args.kwargs["snap_to_silence"] is True
         assert mock_cut.call_args.kwargs["snap_window"] == 2.0
+        assert mock_cut.call_args.kwargs["chime"] is True
+        assert mock_cut.call_args.kwargs["chime_volume"] == 0.4
 
     @patch("siphon.llm_trim.cut_segments")
     @patch("siphon.llm_trim.detect_ads")
@@ -221,3 +224,4 @@ class TestQualityOptionsReachTheirTargets:
 
         assert mock_transcribe.call_args.kwargs["vad_filter"] is False
         assert mock_cut.call_args.kwargs["snap_to_silence"] is False
+        assert mock_cut.call_args.kwargs["chime"] is False

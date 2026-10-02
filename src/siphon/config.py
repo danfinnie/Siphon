@@ -139,6 +139,10 @@ class LLMConfig(BaseModel):
     # land in a natural pause instead of mid-sound.
     snap_cuts_to_silence: bool = False
     snap_window_seconds: float = 3.0
+    # Insert a short chime wherever an ad was cut, so you can hear that something was removed.
+    # One chime per cut: ads that were cut together get just one. mp3 and aac audio only.
+    chime_on_cut: bool = False
+    chime_volume: float = 0.5
     claude_concurrency: int = 3
 
 

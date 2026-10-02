@@ -142,6 +142,8 @@ def _run_pipeline(
             file_path, high_confidence,
             snap_to_silence=llm_config.snap_cuts_to_silence,
             snap_window=llm_config.snap_window_seconds,
+            chime=llm_config.chime_on_cut,
+            chime_volume=llm_config.chime_volume,
         )
         logger.info("Applied %d cuts to %s", len(high_confidence), file_path)
 

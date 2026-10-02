@@ -67,6 +67,8 @@ llm:
   whisper_vad_filter: false       # skip music/silence when transcribing (cleaner text, better boundaries)
   snap_cuts_to_silence: false     # move each cut to the nearest pause so cuts land between words
   snap_window_seconds: 3.0        # how far a cut point may move to find a pause
+  chime_on_cut: false             # short chime where an ad was cut (one per cut; mp3/aac only)
+  chime_volume: 0.5               # chime loudness, 0.05-0.9
 
 defaults:
   mode: "video"

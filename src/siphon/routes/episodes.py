@@ -111,6 +111,7 @@ def _render_episode(request: Request, episode: dict, status_code: int = 200):
         "original_is_clean_file": bool(paths["original"]) and paths["original"] == paths["clean"],
         "keep_data": config.storage.keep_inspection_data,
         "time_map": inspector.clean_time_map(cuts),
+        "chime_seconds": inspector.chime_seconds(audit),
         "reprocess": {
             "detect_problem": check_reprocess(config, episode, "detect"),
             "transcribe_problem": check_reprocess(config, episode, "transcribe"),

@@ -119,6 +119,9 @@ def _cut_keeping_original(
     snap_to_silence: bool,
     snap_window: float,
     applied: list,
+    chime: bool = False,
+    chime_volume: float = 0.5,
+    report: dict | None = None,
 ) -> tuple[float | None, float | None]:
     """Cut ``segments`` out of ``file_path`` in place, first keeping a copy of the original.
 
@@ -139,6 +142,7 @@ def _cut_keeping_original(
     cut_segments(
         file_path, segments,
         snap_to_silence=snap_to_silence, snap_window=snap_window, applied=applied,
+        chime=chime, chime_volume=chime_volume, report=report,
     )
     try:
         after = get_duration(file_path)
@@ -1187,6 +1191,7 @@ async def _process_one_claude(ep: dict, config: SiphonConfig, db: Database) -> N
         cut_failed = False
         keep_data = config.storage.keep_inspection_data
         applied_cuts: list[dict] = []
+        chime_report: dict = {}
         original_duration = final_duration = None
         if high_confidence and file_path:
             t0_ffmpeg = time.time()
@@ -1197,7 +1202,7 @@ async def _process_one_claude(ep: dict, config: SiphonConfig, db: Database) -> N
                         functools.partial(
                             _cut_keeping_original, file_path, high_confidence, keep_data,
                             config.llm.snap_cuts_to_silence, config.llm.snap_window_seconds,
-                            applied_cuts,
+                            applied_cuts, config.llm.chime_on_cut, config.llm.chime_volume, chime_report,
                         ),
                     )
                     ffmpeg_duration = time.time() - t0_ffmpeg
@@ -1212,6 +1217,7 @@ async def _process_one_claude(ep: dict, config: SiphonConfig, db: Database) -> N
                         cut_failed = True
                         high_confidence = []  # Record 0 cuts applied
                         applied_cuts.clear()
+                        chime_report.clear()
                         if keep_data:
                             _delete_file(original_path(file_path))  # file is unchanged; no copy needed
 
@@ -1242,6 +1248,9 @@ async def _process_one_claude(ep: dict, config: SiphonConfig, db: Database) -> N
             audit["applied_cuts"] = [
                 {"start": round(c["start"], 2), "end": round(c["end"], 2)} for c in applied_cuts
             ]
+        if chime_report.get("chime_count"):
+            audit["chime_seconds"] = round(chime_report["chime_seconds"], 3)
+            audit["chime_count"] = chime_report["chime_count"]
         if original_duration is not None:
             audit["original_duration"] = round(original_duration, 2)
         if final_duration is not None:

@@ -174,7 +174,7 @@ class TestHelpers:
 
     def test_clean_time_map(self):
         cuts = ins.build_cut_list({"applied_cuts": [{"start": 10, "end": 40}]})
-        assert ins.clean_time_map(cuts) == [{"start": 10, "end": 40, "clean_at": 10}]
+        assert ins.clean_time_map(cuts) == [{"start": 10, "end": 40, "clean_at": 10, "chime": 0.0}]
 
     def test_load_transcript_segments(self, tmp_path):
         good = tmp_path / "t.json"
@@ -212,3 +212,36 @@ class TestEpisodeFiles:
 
     def test_remove_extras_tolerates_missing_files(self, tmp_path):
         remove_extras(str(tmp_path), {"feed_name": "feed", "video_id": "none", "file_path": None})
+
+
+class TestChimes:
+    AUDIT = {"applied_cuts": [{"start": 10, "end": 40}, {"start": 100, "end": 130}, {"start": 500, "end": 560}], "chime_seconds": 1.7}
+
+    def test_chime_seconds(self):
+        assert ins.chime_seconds(self.AUDIT) == 1.7
+        assert ins.chime_seconds({}) == 0.0
+        assert ins.chime_seconds({"chime_seconds": "junk"}) == 0.0
+        assert ins.chime_seconds({"chime_seconds": -4}) == 0.0
+
+    def test_each_earlier_cut_leaves_a_chime_in_the_cleaned_timeline(self):
+        cuts = ins.build_cut_list(self.AUDIT)
+        # without chimes: [10, 70, 440]; each chime inserted at an earlier cut pushes later splices out by 1.7s
+        assert [round(c["clean_at"], 2) for c in cuts] == [10.0, 71.7, 443.4]
+        assert all(c["chime"] == 1.7 for c in cuts)
+
+    def test_no_chimes_means_the_old_timeline(self):
+        audit = {k: v for k, v in self.AUDIT.items() if k != "chime_seconds"}
+        assert [c["clean_at"] for c in ins.build_cut_list(audit)] == [10, 70, 440]
+
+    def test_time_map_carries_the_chime_length(self):
+        mapped = ins.clean_time_map(ins.build_cut_list(self.AUDIT))
+        assert [m["chime"] for m in mapped] == [1.7, 1.7, 1.7]
+
+    def test_cleaned_length_is_consistent_with_the_map(self):
+        # original 600s, 120s of ads removed, 3 chimes added
+        cuts = ins.build_cut_list(self.AUDIT)
+        removed = sum(c["duration"] for c in cuts)
+        assert removed == 120
+        last = cuts[-1]
+        # the splice of the last cut, plus its chime, plus the rest of the episode, is the cleaned length
+        assert last["clean_at"] + last["chime"] + (600 - 560) == pytest.approx(600 - removed + 3 * 1.7)

@@ -510,3 +510,5 @@ class TestQualityOptionDefaults:
         assert llm.whisper_vad_filter is False
         assert llm.snap_cuts_to_silence is False
         assert llm.snap_window_seconds == 3.0
+        assert llm.chime_on_cut is False
+        assert llm.chime_volume == 0.5

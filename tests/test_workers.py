@@ -705,6 +705,8 @@ def _fake_cut(file_path, segments, **kwargs):
         f.write(b"CUT")
     if kwargs.get("applied") is not None:
         kwargs["applied"][:] = [{"start": 9.5, "end": 30.5}]
+    if kwargs.get("chime") and kwargs.get("report") is not None:
+        kwargs["report"].update(chime_seconds=1.7, chime_count=1)
     return file_path
 
 
@@ -811,3 +813,41 @@ class TestPruningRemovesInspectionData:
         assert not os.path.exists(_transcript_path(config, "test-feed", "old"))
         # the newer episode is untouched
         assert os.path.exists(paths["new"]) and os.path.exists(original_path(paths["new"]))
+
+
+class TestChimeOnCut:
+    @patch("siphon.cutter.cut_segments", side_effect=_fake_cut)
+    @patch("siphon.ad_detect.detect_ads", return_value=_AD)
+    async def test_options_reach_the_cutter_and_the_audit_records_the_chime(self, mock_detect, mock_cut, config, db, download_dir):
+        config.llm.chime_on_cut = True
+        config.llm.chime_volume = 0.3
+        _setup_claude_episode(config, db, download_dir)
+
+        await process_claude(config, db)
+
+        kwargs = mock_cut.call_args.kwargs
+        assert kwargs["chime"] is True and kwargs["chime_volume"] == 0.3
+        audit = json.loads(db.get_episode("vid001", "llm-feed")["llm_segments_json"])
+        assert audit["chime_seconds"] == 1.7 and audit["chime_count"] == 1
+
+    @patch("siphon.cutter.cut_segments", side_effect=_fake_cut)
+    @patch("siphon.ad_detect.detect_ads", return_value=_AD)
+    async def test_off_by_default_records_nothing(self, mock_detect, mock_cut, config, db, download_dir):
+        _setup_claude_episode(config, db, download_dir)
+
+        await process_claude(config, db)
+
+        assert mock_cut.call_args.kwargs["chime"] is False
+        audit = json.loads(db.get_episode("vid001", "llm-feed")["llm_segments_json"])
+        assert "chime_seconds" not in audit
+
+    @patch("siphon.cutter.cut_segments", side_effect=RuntimeError("ffmpeg exploded"))
+    @patch("siphon.ad_detect.detect_ads", return_value=_AD)
+    async def test_failed_cut_records_no_chime(self, mock_detect, mock_cut, config, db, download_dir):
+        config.llm.chime_on_cut = True
+        _setup_claude_episode(config, db, download_dir)
+
+        await process_claude(config, db)
+
+        audit = json.loads(db.get_episode("vid001", "llm-feed")["llm_segments_json"])
+        assert "chime_seconds" not in audit

@@ -175,6 +175,8 @@ python -m pytest tests/
 | `llm` | `whisper_vad_filter` | `false` | Skip non-speech (music, jingles) when transcribing; timestamps stay aligned to the original audio |
 | `llm` | `snap_cuts_to_silence` | `false` | Move each cut point to the nearest silence so cuts land in a pause |
 | `llm` | `snap_window_seconds` | `3.0` | How far (seconds) a cut point may move to find a silence |
+| `llm` | `chime_on_cut` | `false` | Insert a short chime wherever an ad was cut so you can hear it (one per cut; ads cut together get one). mp3 and aac audio only; embedded cover art is left out of chimed files |
+| `llm` | `chime_volume` | `0.5` | Chime loudness, 0.05 to 0.9 |
 | `storage` | `max_disk_gb` | `1000` | Auto-prune oldest episodes when exceeded |
 | `storage` | `keep_inspection_data` | `false` | Keep each episode's original (pre-cut) audio and transcript for the Episodes page. Not counted towards `max_disk_gb`; removed when the episode is pruned |
 

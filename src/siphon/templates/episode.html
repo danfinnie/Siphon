@@ -136,6 +136,9 @@
     {% else %}
     <p class="insp-muted">No ads were cut from this episode.</p>
     {% endif %}
+    {% if cuts and chime_seconds %}
+    <p class="insp-muted" style="margin-top:8px;">&#128276; A short chime ({{ '%.1f' | format(chime_seconds) }}s) marks each cut in the cleaned audio. Ads cut together get one chime.</p>
+    {% endif %}
   </div>
 
   {% if flagged %}
@@ -220,10 +223,11 @@ setTimeout(function () { if (document.getElementById('episode-inspector')) locat
   var starts = rows.map(function (r) { return parseFloat(r.getAttribute('data-start')); });
   var current = -1;
 
+  // Each cut takes (end - start) out of the audio and puts a chime of map[i].chime seconds in.
   function origToClean(t) {
     var removed = 0;
     for (var i = 0; i < map.length; i++) {
-      if (t >= map[i].end) removed += map[i].end - map[i].start;
+      if (t >= map[i].end) removed += map[i].end - map[i].start - map[i].chime;
       else if (t > map[i].start) return map[i].clean_at;
       else break;
     }
@@ -232,7 +236,9 @@ setTimeout(function () { if (document.getElementById('episode-inspector')) locat
   function cleanToOrig(t) {
     var added = 0;
     for (var i = 0; i < map.length; i++) {
-      if (t >= map[i].clean_at) added += map[i].end - map[i].start; else break;
+      if (t >= map[i].clean_at + map[i].chime) added += map[i].end - map[i].start - map[i].chime;
+      else if (t >= map[i].clean_at) return map[i].start;   // inside the chime: the cut itself
+      else break;
     }
     return t + added;
   }

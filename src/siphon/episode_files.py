@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 
 
 def original_path(file_path: str) -> str:
@@ -40,3 +41,22 @@ def remove_extras(download_dir: str, episode: dict) -> None:
             os.remove(path)
         except OSError:
             pass
+
+
+def restore_original(file_path: str) -> bool:
+    """Put the kept original back as the episode file (the kept copy stays in place).
+
+    Returns False when there is no kept original, i.e. the episode file already is the original.
+    Raises OSError if the file cannot be replaced (for example while it is being streamed).
+    """
+    kept = original_path(file_path)
+    if not os.path.isfile(kept):
+        return False
+    staging = f"{file_path}.restoring"
+    try:
+        shutil.copy2(kept, staging)
+        os.replace(staging, file_path)
+    finally:
+        if os.path.exists(staging):
+            os.remove(staging)
+    return True

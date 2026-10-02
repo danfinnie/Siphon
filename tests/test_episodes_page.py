@@ -40,7 +40,8 @@ TRANSCRIPT = {"segments": [
     {"start": 20, "end": 25, "text": "This episode is brought to you by Acme"},
     {"start": 100, "end": 105, "text": "regular content here"},
     {"start": 200, "end": 205, "text": "check out my other thing"},
-], "words": [], "text": "", "language": "en", "duration": 600.0}
+], "words": [], "language": "en", "duration": 600.0,
+   "text": "Welcome to the show This episode is brought to you by Acme regular content here check out my other thing"}
 
 
 @pytest.fixture
@@ -56,7 +57,7 @@ def config(tmp_path):
         schedule=ScheduleConfig(check_interval_minutes=30),
         cookies=CookiesConfig(),
         defaults=FeedDefaults(sponsorblock_delay_minutes=0),
-        feeds=[FeedConfig(name="show", url="https://example.com/rss", type="podcast")],
+        feeds=[FeedConfig(name="show", url="https://example.com/rss", type="podcast", llm_trim=True)],
     )
 
 
@@ -101,7 +102,7 @@ def seed(app, config, video_id="ep1", title="The Big Episode", *, audit=AUDIT, t
     db.insert_episode(video_id=video_id, feed_name="show", title=title, status="done")
     db.update_episode_status(
         video_id, "show", "done", file_path=file_path, llm_trim_status="done",
-        llm_cuts_applied=1, llm_segments_json=json.dumps(audit),
+        llm_cuts_applied=len(audit.get("high_confidence", [])), llm_segments_json=json.dumps(audit),
     )
     return file_path
 

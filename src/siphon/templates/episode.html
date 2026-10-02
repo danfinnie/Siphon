@@ -29,6 +29,9 @@
   .tag-possible { background:var(--warning); }
   .tag-detected { background:var(--text-muted); }
   #transcript { max-height:620px; overflow-y:auto; position:relative; }
+  .insp-reprocess { display:flex; gap:24px; flex-wrap:wrap; }
+  .insp-reprocess form { flex:1; min-width:260px; margin:0; }
+  .insp-reprocess button[disabled] { opacity:0.4; cursor:not-allowed; }
   .insp-legend { display:flex; gap:14px; flex-wrap:wrap; font-size:0.85em; color:var(--text-secondary); margin-bottom:10px; }
 </style>
 
@@ -69,6 +72,42 @@
     {% if original_is_clean_file %}
     <p class="insp-muted">Nothing was cut from this episode, so the original and cleaned audio are the same file.</p>
     {% endif %}
+  </div>
+
+  {% if reprocess.busy %}
+  <div class="flash flash-info" id="reprocess-status">This episode is being processed again: {{ reprocess.status_text }}. This page refreshes by itself.</div>
+  {% endif %}
+
+  <div class="card">
+    <h2>Process again</h2>
+    <p class="insp-muted" style="margin-bottom:12px;">
+      Changed a setting and want to see its effect on this episode? It goes back through the queue using the kept original audio,
+      and leaves your feed until it is done. This page shows the new result afterwards.
+    </p>
+    <div class="insp-reprocess">
+      <form method="post" action="/ui/episode/reprocess"
+            onsubmit="return confirm('Redo ad detection for this episode with your current settings? The cleaned audio is replaced when it finishes.');">
+        <input type="hidden" name="feed" value="{{ feed_name }}">
+        <input type="hidden" name="id" value="{{ episode.video_id }}">
+        <input type="hidden" name="mode" value="detect">
+        <button type="submit" class="btn" {% if reprocess.detect_problem %}disabled{% endif %}>Redo ad detection</button>
+        <div class="insp-muted" style="margin-top:6px;">
+          {% if reprocess.detect_problem %}{{ reprocess.detect_problem }}
+          {% else %}Reuses the saved transcript. Use after changing the prompt, effort, merge gap or cut settings.{% endif %}
+        </div>
+      </form>
+      <form method="post" action="/ui/episode/reprocess"
+            onsubmit="return confirm('Transcribe this episode again and redo ad detection with your current settings? This takes longer. The cleaned audio is replaced when it finishes.');">
+        <input type="hidden" name="feed" value="{{ feed_name }}">
+        <input type="hidden" name="id" value="{{ episode.video_id }}">
+        <input type="hidden" name="mode" value="transcribe">
+        <button type="submit" class="btn btn-secondary" {% if reprocess.transcribe_problem %}disabled{% endif %}>Re-transcribe and redo</button>
+        <div class="insp-muted" style="margin-top:6px;">
+          {% if reprocess.transcribe_problem %}{{ reprocess.transcribe_problem }}
+          {% else %}Runs Whisper again too. Use after changing the Whisper model or the voice filter.{% endif %}
+        </div>
+      </form>
+    </div>
   </div>
 
   <div class="card">
@@ -163,6 +202,11 @@
   </div>
 </div>
 
+{% if reprocess.busy %}
+<script>
+setTimeout(function () { if (document.getElementById('episode-inspector')) location.reload(); }, 8000);
+</script>
+{% endif %}
 <script>
 (function () {
   var root = document.getElementById('episode-inspector');

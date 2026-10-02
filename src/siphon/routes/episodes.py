@@ -5,12 +5,15 @@ from __future__ import annotations
 import os
 from urllib.parse import quote
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from siphon import inspector
 from siphon.episode_files import original_path, transcript_path
-from siphon.routes.ui import _get_messages, _render, templates
+from siphon.reprocess import (
+    QUEUED_MESSAGES, STATUS_TEXT, ReprocessError, check_reprocess, reprocess_episode,
+)
+from siphon.routes.ui import _flash, _get_messages, _redirect, _render, templates
 
 # Same prefix as the rest of the web UI, so the localhost-only rule in the security
 # middleware covers these pages and the audio they stream.
@@ -79,24 +82,21 @@ async def episodes_page(request: Request, feed: str = ""):
     })
 
 
-@router.get("/episode", response_class=HTMLResponse)
-async def episode_page(request: Request, feed: str, id: str):
-    db = request.app.state.db
+def _render_episode(request: Request, episode: dict, status_code: int = 200):
+    """Build the inspector page for ``episode`` (used by the GET page and by failed reprocess requests)."""
     config = request.app.state.config
-    episode = db.get_episode(id, feed)
-    if episode is None:
-        return HTMLResponse("Episode not found", status_code=404)
+    feed, video_id = episode["feed_name"], episode["video_id"]
 
     audit = inspector.parse_audit(episode.get("llm_segments_json"))
     cuts = inspector.build_cut_list(audit)
     paths = _audio_paths(episode, audit)
 
-    segments = inspector.load_transcript_segments(transcript_path(config.storage.download_dir, feed, id))
+    segments = inspector.load_transcript_segments(transcript_path(config.storage.download_dir, feed, video_id))
     lines = inspector.classify_segments(segments, audit) if segments else []
 
     ext = os.path.splitext(episode.get("file_path") or "")[1].lower()
-    base_audio_url = f"/ui/episode/audio?feed={quote(feed, safe='')}&id={quote(id, safe='')}"
-    return _render(request, "episode.html", {
+    base_audio_url = f"/ui/episode/audio?feed={quote(feed, safe='')}&id={quote(video_id, safe='')}"
+    response = _render(request, "episode.html", {
         "active_page": "episodes",
         "episode": episode,
         "feed_name": feed,
@@ -111,8 +111,41 @@ async def episode_page(request: Request, feed: str, id: str):
         "original_is_clean_file": bool(paths["original"]) and paths["original"] == paths["clean"],
         "keep_data": config.storage.keep_inspection_data,
         "time_map": inspector.clean_time_map(cuts),
+        "reprocess": {
+            "detect_problem": check_reprocess(config, episode, "detect"),
+            "transcribe_problem": check_reprocess(config, episode, "transcribe"),
+            "busy": episode.get("status") != "done",
+            "status_text": STATUS_TEXT.get(episode.get("status"), episode.get("status")),
+        },
         "messages": _get_messages(request),
     })
+    response.status_code = status_code
+    return response
+
+
+@router.get("/episode", response_class=HTMLResponse)
+async def episode_page(request: Request, feed: str, id: str, queued: str = ""):
+    episode = request.app.state.db.get_episode(id, feed)
+    if episode is None:
+        return HTMLResponse("Episode not found", status_code=404)
+    if queued in QUEUED_MESSAGES:
+        _flash(request, QUEUED_MESSAGES[queued], "info")
+    return _render_episode(request, episode)
+
+
+@router.post("/episode/reprocess")
+async def episode_reprocess(request: Request, feed: str = Form(...), id: str = Form(...), mode: str = Form(...)):
+    """Send a finished episode back through ad detection (and optionally Whisper) with current settings."""
+    state = request.app.state
+    episode = state.db.get_episode(id, feed)
+    if episode is None:
+        return HTMLResponse("Episode not found", status_code=404)
+    try:
+        reprocess_episode(state.config, state.db, episode, mode)
+    except ReprocessError as exc:
+        _flash(request, str(exc), "error")
+        return _render_episode(request, episode, status_code=400)
+    return _redirect(request, f"{_episode_url(feed, id)}&queued={quote(mode, safe='')}")
 
 
 @router.get("/episode/audio")

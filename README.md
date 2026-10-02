@@ -170,6 +170,7 @@ python -m pytest tests/
 | `llm` | `claude_effort` | `medium` | Claude thinking depth (low/medium/high/max) |
 | `llm` | `word_timestamps_max_minutes` | `45` | Max episode length for word-level timestamps |
 | `llm` | `confidence_threshold` | `0.75` | Minimum confidence to cut a detected segment |
+| `llm` | `merge_gap_seconds` | `3.0` | Detected ads closer together than this are cut as one chunk (back-to-back ads are removed whole) |
 | `storage` | `max_disk_gb` | `1000` | Auto-prune oldest episodes when exceeded |
 
 ### Per-feed overrides

@@ -1138,6 +1138,7 @@ async def _process_one_claude(ep: dict, config: SiphonConfig, db: Database) -> N
             confidence_threshold=config.llm.confidence_threshold,
             min_duration=config.llm.min_segment_duration,
             max_duration=config.llm.max_segment_duration,
+            merge_gap=config.llm.merge_gap_seconds,
         )
 
         logger.info(

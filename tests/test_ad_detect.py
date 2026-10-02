@@ -106,6 +106,107 @@ class TestFilterSegments:
         assert marginal == []
 
 
+class TestAdjacentSegmentMerging:
+    """Back-to-back ads must be removed whole, as a single chunk."""
+
+    @staticmethod
+    def _ad(start, end, label="ad", confidence=0.9):
+        return {"start": start, "end": end, "label": label, "confidence": confidence}
+
+    def test_exactly_back_to_back_ads_become_one_chunk(self):
+        high, marginal = filter_segments([self._ad(0, 30, "A"), self._ad(30, 60, "B")])
+        assert len(high) == 1
+        assert (high[0]["start"], high[0]["end"]) == (0, 60)
+        assert high[0]["label"] == "A + B"
+        assert high[0]["merged_from"] == 2
+        assert marginal == []
+
+    def test_small_gap_between_ads_is_merged(self):
+        # the sliver of music/silence between two ads is removed with them
+        high, _ = filter_segments([self._ad(100, 130), self._ad(131.5, 160)])
+        assert [(h["start"], h["end"]) for h in high] == [(100, 160)]
+
+    def test_gap_larger_than_merge_gap_keeps_ads_separate(self):
+        high, _ = filter_segments([self._ad(100, 130), self._ad(140, 170)], merge_gap=3.0)
+        assert [(h["start"], h["end"]) for h in high] == [(100, 130), (140, 170)]
+
+    def test_merge_gap_is_configurable(self):
+        segments = [self._ad(100, 130), self._ad(140, 170)]
+        high, _ = filter_segments(segments, merge_gap=10.0)
+        assert [(h["start"], h["end"]) for h in high] == [(100, 170)]
+        high, _ = filter_segments(segments, merge_gap=0)
+        assert len(high) == 2
+
+    def test_three_ads_in_a_row_become_one_chunk(self):
+        high, _ = filter_segments([
+            self._ad(0, 20, "A"), self._ad(20, 45, "B"), self._ad(46, 80, "C"),
+        ])
+        assert [(h["start"], h["end"]) for h in high] == [(0, 80)]
+        assert high[0]["merged_from"] == 3
+
+    def test_unsorted_and_overlapping_input(self):
+        high, _ = filter_segments([self._ad(50, 90), self._ad(0, 60), self._ad(200, 230)])
+        assert [(h["start"], h["end"]) for h in high] == [(0, 90), (200, 230)]
+
+    def test_chunk_takes_highest_confidence(self):
+        high, _ = filter_segments([
+            self._ad(0, 30, confidence=0.8), self._ad(30, 60, confidence=0.95),
+        ])
+        assert high[0]["confidence"] == 0.95
+
+    def test_marginal_neighbour_of_confident_ad_is_cut_with_it(self):
+        # 0.6 is below the 0.75 threshold, but it is back-to-back with a sure ad
+        high, marginal = filter_segments([
+            self._ad(0, 30, "sure", 0.95), self._ad(30, 60, "unsure", 0.6),
+        ])
+        assert [(h["start"], h["end"]) for h in high] == [(0, 60)]
+        assert marginal == []
+
+    def test_isolated_marginal_segment_stays_marginal(self):
+        high, marginal = filter_segments([
+            self._ad(0, 30, "sure", 0.95), self._ad(100, 130, "unsure", 0.6),
+        ])
+        assert [(h["start"], h["end"]) for h in high] == [(0, 30)]
+        assert [m["label"] for m in marginal] == ["unsure"]
+
+    def test_marginal_neighbours_alone_stay_marginal(self):
+        high, marginal = filter_segments([
+            self._ad(0, 30, confidence=0.6), self._ad(30, 60, confidence=0.6),
+        ])
+        assert high == []
+        assert len(marginal) == 2
+
+    def test_short_tagline_next_to_an_ad_is_cut_with_it(self):
+        # a 4 second tag-line is under min_duration alone, but it belongs to the ad
+        high, _ = filter_segments([self._ad(0, 30, "ad"), self._ad(30, 34, "tagline")], min_duration=7)
+        assert [(h["start"], h["end"]) for h in high] == [(0, 34)]
+
+    def test_isolated_short_segment_is_still_ignored(self):
+        high, _ = filter_segments([self._ad(0, 4), self._ad(100, 130)], min_duration=7)
+        assert [(h["start"], h["end"]) for h in high] == [(100, 130)]
+
+    def test_two_long_ads_in_a_row_are_not_dropped_by_max_duration(self):
+        # each is within the 300s limit; together they are 400s and must still be cut
+        high, _ = filter_segments([self._ad(0, 200), self._ad(200, 400)], max_duration=300)
+        assert [(h["start"], h["end"]) for h in high] == [(0, 400)]
+
+    def test_single_segment_over_max_duration_is_still_dropped(self):
+        high, _ = filter_segments([self._ad(0, 600)], max_duration=300)
+        assert high == []
+
+    def test_single_segment_is_returned_unchanged(self):
+        seg = self._ad(10, 40, "solo", 0.9)
+        high, _ = filter_segments([seg])
+        assert high == [seg]
+        assert "merged_from" not in high[0]
+
+    def test_input_segments_are_not_mutated(self):
+        a, b = self._ad(0, 30, "A"), self._ad(30, 60, "B")
+        filter_segments([a, b])
+        assert (a["start"], a["end"], a["label"]) == (0, 30, "A")
+        assert (b["start"], b["end"], b["label"]) == (30, 60, "B")
+
+
 # ------------------------------------------------------------------ #
 # detect_ads (mocked CLI)
 # ------------------------------------------------------------------ #

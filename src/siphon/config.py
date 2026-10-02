@@ -126,6 +126,8 @@ class LLMConfig(BaseModel):
     confidence_threshold: float = 0.75
     min_segment_duration: int = 7
     max_segment_duration: int = 300
+    # Detected ads closer together than this (seconds) are cut as one chunk
+    merge_gap_seconds: float = 3.0
     claude_concurrency: int = 3
 
 

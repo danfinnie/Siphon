@@ -118,6 +118,43 @@ class TestCutSegmentsMocked:
         mock_validate.assert_called_once()
 
 
+class TestCutSegmentsMerging:
+    """Ads that touch or nearly touch are removed as one piece; no sliver is kept between them."""
+
+    @staticmethod
+    def _keep_ranges(segments, total=600.0, **kwargs):
+        with patch("shutil.move"), \
+             patch("siphon.cutter.validate_file", return_value=True), \
+             patch("siphon.cutter.get_duration", return_value=total), \
+             patch("siphon.cutter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+            cut_segments("/tmp/test.mp3", segments, output_path="/tmp/out.mp3", **kwargs)
+        ranges = []
+        for call in mock_run.call_args_list:
+            cmd = call.args[0]
+            if "-ss" in cmd:
+                ranges.append((float(cmd[cmd.index("-ss") + 1]), float(cmd[cmd.index("-to") + 1])))
+        return ranges
+
+    def test_back_to_back_segments_leave_one_gap_in_the_audio(self):
+        ranges = self._keep_ranges([{"start": 0, "end": 30}, {"start": 30, "end": 60}])
+        assert ranges == [(60.0, 600.0)]
+
+    def test_sliver_between_close_segments_is_not_kept(self):
+        ranges = self._keep_ranges([{"start": 100, "end": 130}, {"start": 130.6, "end": 160}])
+        assert ranges == [(0.0, 100.0), (160.0, 600.0)]
+
+    def test_distant_segments_keep_the_content_between_them(self):
+        ranges = self._keep_ranges([{"start": 100, "end": 130}, {"start": 200, "end": 230}])
+        assert ranges == [(0.0, 100.0), (130.0, 200.0), (230.0, 600.0)]
+
+    def test_merge_gap_can_be_disabled(self):
+        ranges = self._keep_ranges(
+            [{"start": 100, "end": 130}, {"start": 130.5, "end": 160}], merge_gap=0.0,
+        )
+        assert (130.0, 130.5) in ranges
+
+
 # ------------------------------------------------------------------ #
 # Integration tests with real ffmpeg
 # ------------------------------------------------------------------ #
@@ -179,3 +216,18 @@ class TestCutterIntegration:
         # Original file should now be shorter
         new_duration = get_duration(test_file)
         assert 6.0 <= new_duration <= 8.0
+
+    def test_back_to_back_ads_are_removed_as_one_chunk(self, tmp_path):
+        test_file = str(tmp_path / "test.wav")
+        output_file = str(tmp_path / "output.wav")
+        self._create_test_audio(test_file, 20.0)
+
+        # two back-to-back ads, 2s-6s and 6s-10s, as the pipeline would pass them
+        cut_segments(
+            test_file,
+            [{"start": 2.0, "end": 6.0}, {"start": 6.0, "end": 10.0}],
+            output_path=output_file,
+        )
+
+        # 20s minus the whole 8s block
+        assert 11.0 <= get_duration(output_file) <= 13.0

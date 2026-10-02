@@ -127,6 +127,7 @@ def _run_pipeline(
         confidence_threshold=llm_config.confidence_threshold,
         min_duration=llm_config.min_segment_duration,
         max_duration=llm_config.max_segment_duration,
+        merge_gap=llm_config.merge_gap_seconds,
     )
 
     logger.info(

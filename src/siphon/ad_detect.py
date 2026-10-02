@@ -285,41 +285,103 @@ def detect_ads(
     return {"segments": []}
 
 
+def _merge_group(members: list[dict]) -> dict:
+    """Collapse a group of back-to-back segments into one segment spanning all of them."""
+    if len(members) == 1:
+        return members[0]
+    labels: list[str] = []
+    for m in members:
+        label = m.get("label", "")
+        if label and label not in labels:
+            labels.append(label)
+    merged = dict(members[0])
+    merged.update({
+        "start": min(m["start"] for m in members),
+        "end": max(m["end"] for m in members),
+        "label": " + ".join(labels),
+        "confidence": max(m.get("confidence", 0) for m in members),
+        "merged_from": len(members),
+    })
+    return merged
+
+
 def filter_segments(
     segments: list[dict],
     confidence_threshold: float = 0.75,
     min_duration: int = 7,
     max_duration: int = 300,
+    merge_gap: float = 3.0,
 ) -> tuple[list[dict], list[dict]]:
-    """Filter detected segments by confidence and duration.
+    """Decide which detected segments to cut.
 
     Returns (high_confidence, marginal) where:
-    - high_confidence: segments to cut (confidence >= threshold, valid duration)
-    - marginal: segments between 0.5 and threshold (logged but not cut)
-    """
-    high_confidence = []
-    marginal = []
+    - high_confidence: segments to cut. Segments that overlap, touch, or sit within
+      ``merge_gap`` seconds of each other are merged into one chunk, so back-to-back ads
+      are removed as a single piece (0:00-0:30 plus 0:30-1:00 becomes 0:00-1:00).
+    - marginal: segments between 0.5 and the threshold (logged but not cut)
 
+    Neighbouring segments are judged as a group, not one by one:
+    - a group is cut when at least one member reaches ``confidence_threshold``, so a
+      lower-confidence segment sitting right next to a confident ad is cut with it
+      instead of being left behind;
+    - ``min_duration`` applies to the merged group, so a short tag-line next to an ad is
+      cut with it, while an isolated short segment is still ignored;
+    - ``max_duration`` applies to each detected segment (a guard against a runaway
+      detection), not to the merged group, so two long ads in a row are still removed.
+    """
+    candidates = []
     for seg in segments:
-        duration = seg.get("end", 0) - seg.get("start", 0)
+        start = seg.get("start", 0)
+        end = seg.get("end", 0)
+        duration = end - start
         confidence = seg.get("confidence", 0)
 
         # Skip segments outside duration bounds
-        if duration < min_duration or duration > max_duration:
+        if duration <= 0 or duration > max_duration:
             logger.debug(
-                "Skipping segment %.1f-%.1f (duration=%.1fs, outside bounds %d-%d)",
-                seg.get("start", 0), seg.get("end", 0), duration, min_duration, max_duration,
+                "Skipping segment %.1f-%.1f (duration=%.1fs, over the %ds limit)",
+                start, end, duration, max_duration,
             )
             continue
+        if confidence < 0.5:
+            continue
+        candidates.append(seg)
 
-        if confidence >= confidence_threshold:
-            high_confidence.append(seg)
-        elif confidence >= 0.5:
-            marginal.append(seg)
-            logger.info(
-                "Marginal detection: %.1f-%.1f '%s' (confidence=%.2f)",
-                seg.get("start", 0), seg.get("end", 0),
-                seg.get("label", ""), confidence,
-            )
+    candidates.sort(key=lambda s: s["start"])
+
+    groups: list[list[dict]] = []
+    group_end = 0.0
+    for seg in candidates:
+        if groups and seg["start"] - group_end <= merge_gap:
+            groups[-1].append(seg)
+            group_end = max(group_end, seg["end"])
+        else:
+            groups.append([seg])
+            group_end = seg["end"]
+
+    high_confidence = []
+    marginal = []
+    for members in groups:
+        span = max(m["end"] for m in members) - min(m["start"] for m in members)
+        if span < min_duration:
+            logger.debug("Skipping segment group %.1f-%.1f (duration=%.1fs, under %ds)",
+                         members[0]["start"], members[-1]["end"], span, min_duration)
+            continue
+
+        if max(m.get("confidence", 0) for m in members) >= confidence_threshold:
+            merged = _merge_group(members)
+            if len(members) > 1:
+                logger.info(
+                    "Merged %d adjacent segments into one cut: %.1f-%.1f (%s)",
+                    len(members), merged["start"], merged["end"], merged["label"],
+                )
+            high_confidence.append(merged)
+        else:
+            for m in members:
+                marginal.append(m)
+                logger.info(
+                    "Marginal detection: %.1f-%.1f '%s' (confidence=%.2f)",
+                    m.get("start", 0), m.get("end", 0), m.get("label", ""), m.get("confidence", 0),
+                )
 
     return high_confidence, marginal

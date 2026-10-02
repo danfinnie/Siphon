@@ -168,6 +168,7 @@ def cut_segments(
     input_path: str,
     segments: list[dict],
     output_path: str | None = None,
+    merge_gap: float = 1.0,
 ) -> str:
     """Remove ad segments from a media file using ffmpeg concat demuxer.
 
@@ -176,6 +177,9 @@ def cut_segments(
 
     Writes to a temp file first and validates before replacing the original.
     If validation fails, the original file is preserved.
+
+    Segments that overlap, touch, or are less than ``merge_gap`` seconds apart are
+    merged into one cut, so no sliver of an ad is left between two removed segments.
 
     If output_path is None, overwrites the input file.
     Returns the final output path.
@@ -187,11 +191,11 @@ def cut_segments(
     # Get total duration
     total_duration = get_duration(input_path)
 
-    # Sort segments by start time and merge overlaps
+    # Sort segments by start time and merge overlaps and near-touching neighbours
     sorted_segs = sorted(segments, key=lambda s: s["start"])
     merged = []
     for seg in sorted_segs:
-        if merged and seg["start"] <= merged[-1]["end"]:
+        if merged and seg["start"] <= merged[-1]["end"] + merge_gap:
             merged[-1]["end"] = max(merged[-1]["end"], seg["end"])
         else:
             merged.append({"start": seg["start"], "end": seg["end"]})

@@ -79,6 +79,7 @@ def _run_pipeline(
             model_size=llm_config.whisper_model,
             device=llm_config.whisper_device,
             word_timestamps=llm_config.whisper_word_timestamps,
+            vad_filter=llm_config.whisper_vad_filter,
         )
     finally:
         # Clean up temp audio
@@ -137,7 +138,11 @@ def _run_pipeline(
 
     # Step 5: Cut
     if high_confidence:
-        cut_segments(file_path, high_confidence)
+        cut_segments(
+            file_path, high_confidence,
+            snap_to_silence=llm_config.snap_cuts_to_silence,
+            snap_window=llm_config.snap_window_seconds,
+        )
         logger.info("Applied %d cuts to %s", len(high_confidence), file_path)
 
     # Build audit data

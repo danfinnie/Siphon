@@ -71,6 +71,7 @@ def transcribe(
     device: str = "cpu",
     word_timestamps: bool = True,
     num_workers: int = 1,
+    vad_filter: bool = False,
 ) -> dict[str, Any]:
     """Transcribe an audio file using faster-whisper.
 
@@ -90,9 +91,9 @@ def transcribe(
     """
     model = _get_model(model_size, device, num_workers)
 
-    logger.info("Transcribing %s (word_timestamps=%s)", audio_path, word_timestamps)
+    logger.info("Transcribing %s (word_timestamps=%s, vad_filter=%s)", audio_path, word_timestamps, vad_filter)
     segments_iter, info = model.transcribe(
-        audio_path, beam_size=5, word_timestamps=word_timestamps,
+        audio_path, beam_size=5, word_timestamps=word_timestamps, vad_filter=vad_filter,
     )
 
     segments = []

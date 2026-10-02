@@ -183,3 +183,41 @@ class TestRunLLMTrim:
         assert len(audit["segments"]) == 2
         assert len(audit["high_confidence"]) == 1
         assert len(audit["marginal"]) == 1
+
+
+class TestQualityOptionsReachTheirTargets:
+    @patch("siphon.llm_trim.cut_segments")
+    @patch("siphon.llm_trim.detect_ads")
+    @patch("siphon.llm_trim.transcribe")
+    def test_options_are_passed_to_transcribe_and_cut(self, mock_transcribe, mock_detect, mock_cut):
+        feed, _ = _make_feed()
+        llm = LLMConfig(whisper_vad_filter=True, snap_cuts_to_silence=True, snap_window_seconds=2.0)
+        mock_transcribe.return_value = {
+            "text": "Welcome. Squarespace!", "segments": [], "language": "en", "duration": 300.0,
+        }
+        mock_detect.return_value = {
+            "segments": [{"start": 20.0, "end": 80.0, "type": "ad", "label": "x", "confidence": 0.9}]
+        }
+
+        run_llm_trim("/podcast.mp3", feed, llm)
+
+        assert mock_transcribe.call_args.kwargs["vad_filter"] is True
+        assert mock_cut.call_args.kwargs["snap_to_silence"] is True
+        assert mock_cut.call_args.kwargs["snap_window"] == 2.0
+
+    @patch("siphon.llm_trim.cut_segments")
+    @patch("siphon.llm_trim.detect_ads")
+    @patch("siphon.llm_trim.transcribe")
+    def test_defaults_keep_existing_behaviour(self, mock_transcribe, mock_detect, mock_cut):
+        feed, llm = _make_feed()
+        mock_transcribe.return_value = {
+            "text": "Welcome. Squarespace!", "segments": [], "language": "en", "duration": 300.0,
+        }
+        mock_detect.return_value = {
+            "segments": [{"start": 20.0, "end": 80.0, "type": "ad", "label": "x", "confidence": 0.9}]
+        }
+
+        run_llm_trim("/podcast.mp3", feed, llm)
+
+        assert mock_transcribe.call_args.kwargs["vad_filter"] is False
+        assert mock_cut.call_args.kwargs["snap_to_silence"] is False

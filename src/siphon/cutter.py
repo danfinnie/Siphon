@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import tempfile
 
@@ -164,11 +165,73 @@ def normalize_timestamps(file_path: str) -> bool:
         return True
 
 
+def find_nearest_silence(
+    file_path: str,
+    target: float,
+    window: float = 3.0,
+    noise_db: int = -30,
+    min_silence: float = 0.15,
+) -> float:
+    """Return the middle of the silence closest to ``target`` (within +/- ``window`` seconds).
+
+    Uses ffmpeg's silencedetect on a short slice around the target. If no silence is found,
+    or ffmpeg fails, ``target`` is returned unchanged.
+    """
+    start_search = max(0.0, target - window)
+    duration = (target + window) - start_search
+    cmd = [
+        "ffmpeg", "-v", "info",
+        "-ss", str(start_search),
+        "-t", str(duration),
+        "-i", file_path,
+        "-vn",
+        "-af", f"silencedetect=noise={noise_db}dB:duration={min_silence}",
+        "-f", "null", "-",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Silence detection failed near %.1fs: %s", target, exc)
+        return target
+
+    starts = [float(x) for x in re.findall(r"silence_start: (-?[\d.]+)", result.stderr)]
+    ends = [float(x) for x in re.findall(r"silence_end: (-?[\d.]+)", result.stderr)]
+    # A silence that runs past the end of the slice has a start but no end
+    if len(ends) < len(starts):
+        ends.append(duration)
+
+    best = target
+    best_distance = float("inf")
+    for silence_start, silence_end in zip(starts, ends):
+        middle = start_search + (max(silence_start, 0.0) + silence_end) / 2.0
+        distance = abs(middle - target)
+        if distance < best_distance:
+            best, best_distance = middle, distance
+
+    if best_distance <= window:
+        logger.debug("Snapped cut point %.2fs to silence at %.2fs", target, best)
+        return best
+    return target
+
+
+def _merge_ranges(ranges: list[dict], merge_gap: float) -> list[dict]:
+    """Sort ranges and merge those that overlap or are within ``merge_gap`` of each other."""
+    merged: list[dict] = []
+    for seg in sorted(ranges, key=lambda s: s["start"]):
+        if merged and seg["start"] <= merged[-1]["end"] + merge_gap:
+            merged[-1]["end"] = max(merged[-1]["end"], seg["end"])
+        else:
+            merged.append({"start": seg["start"], "end": seg["end"]})
+    return merged
+
+
 def cut_segments(
     input_path: str,
     segments: list[dict],
     output_path: str | None = None,
     merge_gap: float = 1.0,
+    snap_to_silence: bool = False,
+    snap_window: float = 3.0,
 ) -> str:
     """Remove ad segments from a media file using ffmpeg concat demuxer.
 
@@ -181,6 +244,10 @@ def cut_segments(
     Segments that overlap, touch, or are less than ``merge_gap`` seconds apart are
     merged into one cut, so no sliver of an ad is left between two removed segments.
 
+    With ``snap_to_silence`` each cut point is moved to the nearest silence within
+    ``snap_window`` seconds, so cuts land in a pause rather than mid-sound. Cuts that start
+    or end within 2 seconds of the file's edge are extended to the edge.
+
     If output_path is None, overwrites the input file.
     Returns the final output path.
     """
@@ -192,13 +259,20 @@ def cut_segments(
     total_duration = get_duration(input_path)
 
     # Sort segments by start time and merge overlaps and near-touching neighbours
-    sorted_segs = sorted(segments, key=lambda s: s["start"])
-    merged = []
-    for seg in sorted_segs:
-        if merged and seg["start"] <= merged[-1]["end"] + merge_gap:
-            merged[-1]["end"] = max(merged[-1]["end"], seg["end"])
-        else:
-            merged.append({"start": seg["start"], "end": seg["end"]})
+    merged = _merge_ranges(segments, merge_gap)
+
+    if snap_to_silence:
+        snapped = []
+        for seg in merged:
+            start = 0.0 if seg["start"] <= 2.0 else find_nearest_silence(input_path, seg["start"], snap_window)
+            end = (
+                total_duration
+                if seg["end"] >= total_duration - 2.0
+                else find_nearest_silence(input_path, seg["end"], snap_window)
+            )
+            if end > start:
+                snapped.append({"start": start, "end": end})
+        merged = _merge_ranges(snapped, merge_gap)
 
     # Invert to get keep ranges
     keep_ranges = []

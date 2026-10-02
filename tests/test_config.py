@@ -460,3 +460,53 @@ class TestOptionalSectionDefaults:
         assert isinstance(cfg.llm, LLMConfig)
         assert cfg.llm.whisper_model == "base"
         assert cfg.llm.confidence_threshold == 0.75
+
+
+class TestMaxAgeDays:
+    """max_age_days is a rolling date_cutoff that moves forward every day."""
+
+    @staticmethod
+    def _resolve(defaults=None, **feed_kwargs):
+        feed = FeedConfig(name="show", url="https://example.com/rss", type="podcast", **feed_kwargs)
+        return resolve_feed(feed, defaults or FeedDefaults())
+
+    def test_off_by_default(self):
+        assert self._resolve().date_cutoff is None
+        assert self._resolve().max_age_days is None
+
+    def test_becomes_a_date_cutoff(self):
+        from freezegun import freeze_time
+        with freeze_time("2026-10-10 12:00:00"):
+            resolved = self._resolve(FeedDefaults(max_age_days=4))
+        assert resolved.date_cutoff == "20261006"
+
+    def test_cutoff_moves_forward_as_days_pass(self):
+        from freezegun import freeze_time
+        defaults = FeedDefaults(max_age_days=4)
+        with freeze_time("2026-10-10"):
+            first = self._resolve(defaults).date_cutoff
+        with freeze_time("2026-10-15"):
+            later = self._resolve(defaults).date_cutoff
+        assert (first, later) == ("20261006", "20261011")
+
+    def test_later_of_explicit_cutoff_and_age_wins(self):
+        from freezegun import freeze_time
+        with freeze_time("2026-10-10"):
+            # explicit cutoff is more recent than the 4-day window
+            assert self._resolve(FeedDefaults(max_age_days=4, date_cutoff="20261009")).date_cutoff == "20261009"
+            # the 4-day window is more recent than the explicit cutoff
+            assert self._resolve(FeedDefaults(max_age_days=4, date_cutoff="20260101")).date_cutoff == "20261006"
+
+    def test_per_feed_value_overrides_default(self):
+        from freezegun import freeze_time
+        with freeze_time("2026-10-10"):
+            resolved = self._resolve(FeedDefaults(max_age_days=4), max_age_days=1)
+        assert resolved.date_cutoff == "20261009"
+
+
+class TestQualityOptionDefaults:
+    def test_new_llm_options_default_to_existing_behaviour(self):
+        llm = LLMConfig()
+        assert llm.whisper_vad_filter is False
+        assert llm.snap_cuts_to_silence is False
+        assert llm.snap_window_seconds == 3.0

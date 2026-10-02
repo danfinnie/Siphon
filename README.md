@@ -171,6 +171,9 @@ python -m pytest tests/
 | `llm` | `word_timestamps_max_minutes` | `45` | Max episode length for word-level timestamps |
 | `llm` | `confidence_threshold` | `0.75` | Minimum confidence to cut a detected segment |
 | `llm` | `merge_gap_seconds` | `3.0` | Detected ads closer together than this are cut as one chunk (back-to-back ads are removed whole) |
+| `llm` | `whisper_vad_filter` | `false` | Skip non-speech (music, jingles) when transcribing; timestamps stay aligned to the original audio |
+| `llm` | `snap_cuts_to_silence` | `false` | Move each cut point to the nearest silence so cuts land in a pause |
+| `llm` | `snap_window_seconds` | `3.0` | How far (seconds) a cut point may move to find a silence |
 | `storage` | `max_disk_gb` | `1000` | Auto-prune oldest episodes when exceeded |
 
 ### Per-feed overrides
@@ -182,6 +185,7 @@ Every feed can override the defaults above. Set these in `config.yaml` under eac
 | `sponsorblock` | `true` | Enable/disable SponsorBlock segment removal (YouTube only) |
 | `sponsorblock_delay_minutes` | `1440` | Wait time after publish for SB segments to be crowdsourced |
 | `llm_trim` | `false` | Enable Whisper + Claude ad detection for this feed |
+| `max_age_days` | none | Ignore episodes older than this many days (a rolling alternative to `date_cutoff`; the later of the two applies) |
 | `quality` | `1440` | YouTube video quality (`1440`, `1080`, or `max`) |
 | `block_shorts` | `true` | Filter out YouTube Shorts (< 60s) |
 | `min_duration_seconds` | `0` | Skip episodes shorter than this |

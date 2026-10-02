@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import textwrap
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Optional, Union
 
@@ -128,6 +129,13 @@ class LLMConfig(BaseModel):
     max_segment_duration: int = 300
     # Detected ads closer together than this (seconds) are cut as one chunk
     merge_gap_seconds: float = 3.0
+    # Skip stretches with no speech (music, jingles) when transcribing. Stops Whisper
+    # inventing text over music, which makes ad boundaries cleaner. Timestamps are kept.
+    whisper_vad_filter: bool = False
+    # Move each cut point to the nearest silence within snap_window_seconds, so cuts
+    # land in a natural pause instead of mid-sound.
+    snap_cuts_to_silence: bool = False
+    snap_window_seconds: float = 3.0
     claude_concurrency: int = 3
 
 
@@ -146,6 +154,8 @@ class FeedDefaults(BaseModel):
     block_shorts: bool = True
     min_duration_seconds: int = 60
     date_cutoff: str | None = None
+    # Rolling alternative to date_cutoff: ignore episodes older than this many days
+    max_age_days: int | None = None
     title_exclude: list[str] = []
     llm_trim: bool = False
 
@@ -184,6 +194,7 @@ class FeedConfig(BaseModel):
     block_shorts: Optional[bool] = None
     min_duration_seconds: Optional[int] = None
     date_cutoff: Optional[str] = None
+    max_age_days: Optional[int] = None
     title_exclude: Optional[list[str]] = None
     llm_trim: Optional[bool] = None
 
@@ -226,6 +237,7 @@ class ResolvedFeed(BaseModel):
     block_shorts: bool
     min_duration_seconds: int
     date_cutoff: str | None
+    max_age_days: int | None = None
     title_exclude: list[str]
     llm_trim: bool
 
@@ -266,6 +278,11 @@ def resolve_feed(feed: FeedConfig, defaults: FeedDefaults) -> ResolvedFeed:
             merged[field_name] = feed_value
         else:
             merged[field_name] = getattr(defaults, field_name)
+    # A rolling age limit becomes a date cutoff (YYYYMMDD); the later of the two wins
+    if merged.get("max_age_days"):
+        rolling = (datetime.now(timezone.utc) - timedelta(days=merged["max_age_days"])).strftime("%Y%m%d")
+        explicit = merged.get("date_cutoff")
+        merged["date_cutoff"] = max(explicit, rolling) if explicit else rolling
     # Per-feed-only fields (not in FeedDefaults)
     merged["claude_prompt_extra"] = feed.claude_prompt_extra
     merged["claude_prompt_override"] = feed.claude_prompt_override

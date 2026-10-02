@@ -63,6 +63,9 @@ llm:
   min_segment_duration: 7
   max_segment_duration: 300
   merge_gap_seconds: 3.0          # ads closer together than this are cut as one chunk
+  whisper_vad_filter: false       # skip music/silence when transcribing (cleaner text, better boundaries)
+  snap_cuts_to_silence: false     # move each cut to the nearest pause so cuts land between words
+  snap_window_seconds: 3.0        # how far a cut point may move to find a pause
 
 defaults:
   mode: "video"
@@ -78,6 +81,7 @@ defaults:
   block_shorts: true
   min_duration_seconds: 60
   date_cutoff: null
+  max_age_days: null              # rolling alternative to date_cutoff: skip episodes older than N days
   title_exclude: []
   llm_trim: false
 

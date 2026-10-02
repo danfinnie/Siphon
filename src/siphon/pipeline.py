@@ -18,6 +18,7 @@ Claude, applies ffmpeg cuts, and sets the episode to done.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -866,6 +867,7 @@ async def _process_one_whisper(ep: dict, config: SiphonConfig, db: Database) -> 
                     None, transcribe, whisper_input,
                     config.llm.whisper_model, config.llm.whisper_device,
                     config.llm.whisper_word_timestamps, config.llm.whisper_workers,
+                    config.llm.whisper_vad_filter,
                 ),
                 timeout=WHISPER_TIMEOUT_SECONDS,
             )
@@ -1153,7 +1155,14 @@ async def _process_one_claude(ep: dict, config: SiphonConfig, db: Database) -> N
             t0_ffmpeg = time.time()
             for attempt in range(2):
                 try:
-                    await loop.run_in_executor(None, cut_segments, file_path, high_confidence)
+                    await loop.run_in_executor(
+                        None,
+                        functools.partial(
+                            cut_segments, file_path, high_confidence,
+                            snap_to_silence=config.llm.snap_cuts_to_silence,
+                            snap_window=config.llm.snap_window_seconds,
+                        ),
+                    )
                     ffmpeg_duration = time.time() - t0_ffmpeg
                     logger.info("Applied %d cuts to %s in %.1fs", len(high_confidence), file_path, ffmpeg_duration)
                     break

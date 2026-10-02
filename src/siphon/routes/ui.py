@@ -49,9 +49,8 @@ def _is_htmx(request: Request) -> bool:
 
 def _render(request: Request, template_name: str, context: dict):
     """Render template — full page for normal requests, content-only for htmx."""
-    context["request"] = request
     context["is_htmx"] = _is_htmx(request)
-    return templates.TemplateResponse(template_name, context)
+    return templates.TemplateResponse(request, template_name, context)
 
 
 def _redirect(request: Request, url: str):
@@ -378,8 +377,7 @@ async def activity_log_page(request: Request):
     from siphon.activity import get_recent
     config = request.app.state.config
     db = request.app.state.db
-    return templates.TemplateResponse("activity_log.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "activity_log.html", {
         "activity_log": get_recent(50),
         "status": _get_system_status(config, db, request.app),
         "current_status": "See activity footer",
@@ -1300,8 +1298,7 @@ async def import_upload(request: Request, opml_file: UploadFile = File(...)):
 
     if not feeds:
         _flash(request, "No feeds found in OPML file.", "error")
-        return templates.TemplateResponse("import_opml.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "import_opml.html", {
             "active_page": "import",
             "feeds_to_review": None,
             "messages": _get_messages(request),
@@ -1325,8 +1322,7 @@ async def import_upload(request: Request, opml_file: UploadFile = File(...)):
 
     if not new_feeds:
         _flash(request, "All feeds in the OPML file already exist.", "info")
-        return templates.TemplateResponse("import_opml.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "import_opml.html", {
             "active_page": "import",
             "feeds_to_review": None,
             "messages": _get_messages(request),

@@ -70,6 +70,9 @@ class StorageConfig(BaseModel):
     download_dir: str
     database: str
     max_disk_gb: int = 100
+    # Keep each episode's original (pre-cut) audio and its transcript so the Episodes page can
+    # show what was cut and let you compare. Uses roughly twice the disk per cut episode.
+    keep_inspection_data: bool = False
     youtube_keep_per_feed: int = 50
     podcast_keep_per_feed: int = 200
 

@@ -21,7 +21,10 @@ from siphon.config import (
     YouTubeConfig,
 )
 from siphon.db import Database
+from siphon.episode_files import original_path
 from siphon.pipeline import (
+    _cut_keeping_original,
+    _prune_disk,
     _transcript_path,
     process_claude,
     process_downloads,
@@ -678,3 +681,133 @@ class TestDBPipelineMethods:
         assert ep["whisper_segment_count"] == 25
         assert ep["transcript_size_bytes"] == 12345
         assert ep["whisper_model"] == "base"
+
+
+# ------------------------------------------------------------------ #
+# keep_inspection_data: original audio + transcript for the Episodes page
+# ------------------------------------------------------------------ #
+
+
+def _setup_claude_episode(config, db, download_dir, video_id="vid001"):
+    path = _create_media_file(download_dir, "llm-feed", video_id)
+    _create_transcript(download_dir, "llm-feed", video_id)
+    db.insert_episode(video_id=video_id, feed_name="llm-feed", title="Ep 1", status="pending_claude")
+    db.update_episode_status(video_id, "llm-feed", "pending_claude", file_path=path)
+    return path
+
+
+_AD = {"segments": [{"start": 10.0, "end": 30.0, "type": "ad", "label": "sponsor", "confidence": 0.95}]}
+
+
+def _fake_cut(file_path, segments, **kwargs):
+    """Stand-in for cut_segments: shrinks the file and reports the cut, like the real one."""
+    with open(file_path, "wb") as f:
+        f.write(b"CUT")
+    if kwargs.get("applied") is not None:
+        kwargs["applied"][:] = [{"start": 9.5, "end": 30.5}]
+    return file_path
+
+
+class TestKeepInspectionData:
+    @patch("siphon.cutter.cut_segments", side_effect=_fake_cut)
+    @patch("siphon.ad_detect.detect_ads", return_value=_AD)
+    async def test_keeps_original_transcript_and_records_cuts(self, mock_detect, mock_cut, config, db, download_dir):
+        config.storage.keep_inspection_data = True
+        path = _setup_claude_episode(config, db, download_dir)
+
+        await process_claude(config, db)
+
+        assert open(path, "rb").read() == b"CUT"
+        assert open(original_path(path), "rb").read() == b"x" * 1000   # the untouched original
+        assert os.path.exists(_transcript_path(config, "llm-feed", "vid001"))
+        audit = json.loads(db.get_episode("vid001", "llm-feed")["llm_segments_json"])
+        assert audit["applied_cuts"] == [{"start": 9.5, "end": 30.5}]
+        assert audit["high_confidence"][0]["label"] == "sponsor"
+
+    @patch("siphon.cutter.cut_segments", side_effect=_fake_cut)
+    @patch("siphon.ad_detect.detect_ads", return_value=_AD)
+    async def test_off_by_default_keeps_nothing(self, mock_detect, mock_cut, config, db, download_dir):
+        assert config.storage.keep_inspection_data is False
+        path = _setup_claude_episode(config, db, download_dir)
+
+        await process_claude(config, db)
+
+        assert not os.path.exists(original_path(path))
+        assert not os.path.exists(_transcript_path(config, "llm-feed", "vid001"))
+
+    @patch("siphon.cutter.cut_segments", side_effect=RuntimeError("ffmpeg exploded"))
+    @patch("siphon.ad_detect.detect_ads", return_value=_AD)
+    async def test_failed_cut_leaves_no_stray_original(self, mock_detect, mock_cut, config, db, download_dir):
+        config.storage.keep_inspection_data = True
+        path = _setup_claude_episode(config, db, download_dir)
+
+        await process_claude(config, db)
+
+        ep = db.get_episode("vid001", "llm-feed")
+        assert ep["llm_cuts_applied"] == 0
+        assert open(path, "rb").read() == b"x" * 1000        # served uncut
+        assert not os.path.exists(original_path(path))        # the copy would just duplicate it
+
+    @patch("siphon.cutter.cut_segments", side_effect=_fake_cut)
+    @patch("siphon.ad_detect.detect_ads", return_value={"segments": []})
+    async def test_no_ads_makes_no_copy(self, mock_detect, mock_cut, config, db, download_dir):
+        config.storage.keep_inspection_data = True
+        path = _setup_claude_episode(config, db, download_dir)
+
+        await process_claude(config, db)
+
+        assert not os.path.exists(original_path(path))        # nothing was cut, so nothing to compare
+        assert os.path.exists(_transcript_path(config, "llm-feed", "vid001"))
+
+
+class TestCutKeepingOriginal:
+    def test_original_is_never_overwritten_by_a_retry(self, tmp_path):
+        path = str(tmp_path / "ep.mp3")
+        with open(path, "wb") as f:
+            f.write(b"ORIGINAL")
+        with patch("siphon.cutter.cut_segments", side_effect=_fake_cut), \
+             patch("siphon.cutter.get_duration", return_value=10.0):
+            applied = []
+            _cut_keeping_original(path, [{"start": 1, "end": 2}], True, False, 3.0, applied)
+            _cut_keeping_original(path, [{"start": 1, "end": 2}], True, False, 3.0, applied)
+        assert open(original_path(path), "rb").read() == b"ORIGINAL"
+        assert open(path, "rb").read() == b"CUT"
+
+    def test_no_copy_when_not_keeping(self, tmp_path):
+        path = str(tmp_path / "ep.mp3")
+        with open(path, "wb") as f:
+            f.write(b"ORIGINAL")
+        with patch("siphon.cutter.cut_segments", side_effect=_fake_cut), \
+             patch("siphon.cutter.get_duration", return_value=10.0):
+            _cut_keeping_original(path, [{"start": 1, "end": 2}], False, False, 3.0, [])
+        assert not os.path.exists(original_path(path))
+
+    def test_returns_durations_before_and_after(self, tmp_path):
+        path = str(tmp_path / "ep.mp3")
+        with open(path, "wb") as f:
+            f.write(b"ORIGINAL")
+        with patch("siphon.cutter.cut_segments", side_effect=_fake_cut), \
+             patch("siphon.cutter.get_duration", side_effect=[600.0, 540.0]):
+            assert _cut_keeping_original(path, [{"start": 1, "end": 2}], True, False, 3.0, []) == (600.0, 540.0)
+
+
+class TestPruningRemovesInspectionData:
+    async def test_pruned_episode_loses_original_and_transcript(self, config, db, download_dir):
+        config.storage.youtube_keep_per_feed = 1
+        paths = {}
+        for vid, date in (("old", "20260101"), ("new", "20260201")):
+            paths[vid] = _create_media_file(download_dir, "test-feed", vid)
+            with open(original_path(paths[vid]), "wb") as f:
+                f.write(b"orig")
+            _create_transcript(download_dir, "test-feed", vid)
+            db.insert_episode(video_id=vid, feed_name="test-feed", title=vid, upload_date=date, status="done")
+            db.update_episode_status(vid, "test-feed", "done", file_path=paths[vid])
+
+        await _prune_disk(config, db)
+
+        assert db.get_episode("old", "test-feed")["status"] == "pruned"
+        assert not os.path.exists(paths["old"])
+        assert not os.path.exists(original_path(paths["old"]))
+        assert not os.path.exists(_transcript_path(config, "test-feed", "old"))
+        # the newer episode is untouched
+        assert os.path.exists(paths["new"]) and os.path.exists(original_path(paths["new"]))

@@ -46,6 +46,7 @@ Available at `http://localhost:8585/ui/` (localhost only, no auth). Three themes
 - **Dashboard** with system stats, lifetime metrics, and insights (most stale feeds, disk hogs, longest processing, cut stats)
 - **Feed management** — add/edit/delete feeds with all per-feed config options, type-aware forms (YouTube vs podcast)
 - **OPML import** for bulk podcast migration from Pocket Casts or other apps
+- **Episodes page** — open any processed episode to read its transcript with the cut ads highlighted, see exactly what was cut (ads that ran back to back appear as one cut) and what was flagged but not cut, and play the original and cleaned audio side by side. Needs `storage.keep_inspection_data: true` to keep the original audio and transcript of new episodes (about twice the disk per cut episode; older episodes still list their cuts)
 - **Live activity log** in sticky footer with queue status, worker activity, and timing
 - **Sort & filter** — bidirectional sort by name, date, LLM cuts, SB cuts, size, time saved; filter by YouTube, Podcast, LLM, SponsorBlock
 - **Search** — instant feed search from the header
@@ -175,6 +176,7 @@ python -m pytest tests/
 | `llm` | `snap_cuts_to_silence` | `false` | Move each cut point to the nearest silence so cuts land in a pause |
 | `llm` | `snap_window_seconds` | `3.0` | How far (seconds) a cut point may move to find a silence |
 | `storage` | `max_disk_gb` | `1000` | Auto-prune oldest episodes when exceeded |
+| `storage` | `keep_inspection_data` | `false` | Keep each episode's original (pre-cut) audio and transcript for the Episodes page. Not counted towards `max_disk_gb`; removed when the episode is pruned |
 
 ### Per-feed overrides
 

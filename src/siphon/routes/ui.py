@@ -1264,12 +1264,9 @@ def _do_catchup(request, config, db, feed_name):
             except OSError:
                 pass
 
-        # Also delete any transcript file
-        transcript = os.path.join(download_dir, feed_name, f"{ep['video_id']}_transcript.json")
-        try:
-            os.remove(transcript)
-        except OSError:
-            pass
+        # Also delete the kept original and transcript
+        from siphon.episode_files import remove_extras
+        remove_extras(download_dir, ep)
 
         db.update_episode_status(ep["video_id"], feed_name, "pruned")
 

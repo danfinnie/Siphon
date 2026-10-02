@@ -232,6 +232,7 @@ def cut_segments(
     merge_gap: float = 1.0,
     snap_to_silence: bool = False,
     snap_window: float = 3.0,
+    applied: list | None = None,
 ) -> str:
     """Remove ad segments from a media file using ffmpeg concat demuxer.
 
@@ -247,6 +248,9 @@ def cut_segments(
     With ``snap_to_silence`` each cut point is moved to the nearest silence within
     ``snap_window`` seconds, so cuts land in a pause rather than mid-sound. Cuts that start
     or end within 2 seconds of the file's edge are extended to the edge.
+
+    If ``applied`` is a list, it is filled with the ranges that were actually removed
+    (``{"start", "end"}`` in seconds on the original timeline) after merging and snapping.
 
     If output_path is None, overwrites the input file.
     Returns the final output path.
@@ -287,6 +291,9 @@ def cut_segments(
     if not keep_ranges:
         logger.warning("All content would be cut — skipping")
         return input_path
+
+    if applied is not None:
+        applied[:] = [{"start": m["start"], "end": m["end"]} for m in merged]
 
     logger.info(
         "Cutting %d segments from %s, keeping %d ranges",

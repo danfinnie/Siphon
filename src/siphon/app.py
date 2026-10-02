@@ -165,6 +165,7 @@ def create_app(config: SiphonConfig) -> FastAPI:
     from siphon.routes.media import router as media_router
     from siphon.routes.api import router as api_router
     from siphon.routes.ui import router as ui_router, get_img_dir
+    from siphon.routes.episodes import router as episodes_router
 
     # RSS and API routes require auth
     app.include_router(feeds_router, dependencies=[Depends(auth_dep)])
@@ -175,6 +176,7 @@ def create_app(config: SiphonConfig) -> FastAPI:
 
     # Web UI — localhost only, no auth needed
     app.include_router(ui_router)
+    app.include_router(episodes_router)
 
     # Static images (logo, icons) — must mount on app, not router
     from starlette.staticfiles import StaticFiles

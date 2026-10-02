@@ -29,6 +29,7 @@ storage:
   download_dir: "/path/to/downloads"
   database: "./siphon.db"
   max_disk_gb: 1000
+  keep_inspection_data: false     # keep original audio + transcript for the Episodes page (~2x disk per cut episode)
   youtube_keep_per_feed: 50
   podcast_keep_per_feed: 200
 

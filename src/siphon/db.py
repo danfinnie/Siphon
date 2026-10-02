@@ -255,6 +255,17 @@ class Database:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_processed_episodes(self, limit: int = 200, feed_name: str | None = None) -> list[dict]:
+        """Episodes that finished ad detection, newest first (for the Episodes page)."""
+        sql = "SELECT * FROM episodes WHERE status = 'done' AND llm_trim_status = 'done'"
+        params: list = []
+        if feed_name:
+            sql += " AND feed_name = ?"
+            params.append(feed_name)
+        sql += " ORDER BY updated_at DESC, discovered_at DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
     def get_done_episodes_by_feed(self, feed_name: str) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM episodes WHERE feed_name = ? AND status = 'done' ORDER BY upload_date DESC",

@@ -240,6 +240,39 @@ class TestCutSegmentsSnapping:
         assert ranges == [(0.0, 100.0), (160.0, 600.0)]
 
 
+class TestCutSegmentsApplied:
+    """cut_segments reports what it really removed, for the Episodes page."""
+
+    @staticmethod
+    def _run(segments, applied, total=600.0, snap_map=None, **kwargs):
+        snap_map = snap_map or {}
+        with patch("shutil.move"), \
+             patch("siphon.cutter.validate_file", return_value=True), \
+             patch("siphon.cutter.get_duration", return_value=total), \
+             patch("siphon.cutter.find_nearest_silence", side_effect=lambda f, t, w: snap_map.get(t, t)), \
+             patch("siphon.cutter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+            cut_segments("/tmp/test.mp3", segments, output_path="/tmp/out.mp3", applied=applied, **kwargs)
+
+    def test_reports_merged_ranges(self):
+        applied = []
+        self._run([{"start": 100, "end": 130}, {"start": 130.5, "end": 160}, {"start": 300, "end": 330}], applied)
+        assert applied == [{"start": 100, "end": 160}, {"start": 300, "end": 330}]
+
+    def test_reports_snapped_ranges(self):
+        applied = []
+        self._run([{"start": 100, "end": 130}], applied, snap_map={100: 99.4, 130: 131.2}, snap_to_silence=True)
+        assert applied == [{"start": 99.4, "end": 131.2}]
+
+    def test_left_alone_when_there_is_nothing_to_cut(self):
+        applied = [{"start": 1, "end": 2}]
+        assert cut_segments("/tmp/test.mp3", [], applied=applied) == "/tmp/test.mp3"
+        assert applied == [{"start": 1, "end": 2}]
+
+    def test_optional(self):
+        self._run([{"start": 100, "end": 130}], None)
+
+
 # ------------------------------------------------------------------ #
 # Integration tests with real ffmpeg
 # ------------------------------------------------------------------ #

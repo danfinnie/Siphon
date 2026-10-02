@@ -1,0 +1,258 @@
+{% if not is_htmx %}{% extends "base.html" %}{% endif %}
+{% if not is_htmx %}{% block title_suffix %} - {{ episode.title }}{% endblock %}{% endif %}
+{% block content %}
+<style>
+  .insp-tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  .insp-tile { background:var(--bg-input); border-radius:6px; padding:10px 12px; }
+  .insp-tile .v { font-size:1.4em; font-weight:600; color:var(--text-heading); }
+  .insp-tile .l { font-size:0.75em; text-transform:uppercase; color:var(--text-label); }
+  .insp-player { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
+  .insp-player .lbl { width:80px; font-weight:600; color:var(--text-label); flex:none; }
+  .insp-player audio { flex:1; min-width:0; }
+  .insp-player video { flex:1; min-width:0; max-height:240px; }
+  .insp-muted { color:var(--text-secondary); font-size:0.9em; }
+  .seg { display:grid; grid-template-columns:62px 1fr; gap:10px; padding:5px 8px; border-left:4px solid transparent;
+         border-radius:4px; font-size:0.92em; line-height:1.45; }
+  .seg .t { font-family:monospace; color:var(--accent); cursor:pointer; user-select:none; }
+  .seg .t:hover { text-decoration:underline; }
+  .seg .c { cursor:pointer; opacity:0.35; margin-left:6px; user-select:none; }
+  .seg:hover .c { opacity:0.9; }
+  .seg-cut { background:rgba(231,76,60,0.20); border-left-color:var(--error); }
+  .seg-edge { background:repeating-linear-gradient(135deg, rgba(231,76,60,0.16) 0 6px, transparent 6px 12px); border-left-color:var(--error); }
+  .seg-possible { background:rgba(243,156,18,0.16); border-left-color:var(--warning); }
+  .seg-detected { background:rgba(136,136,136,0.12); border-left:4px dashed var(--text-muted); }
+  .seg.playing { outline:2px solid var(--accent); outline-offset:-2px; }
+  .tag { display:inline-block; font-size:0.72em; font-weight:700; padding:1px 6px; border-radius:3px; margin-right:6px;
+         color:#fff; text-transform:uppercase; letter-spacing:0.3px; vertical-align:middle; }
+  .tag-cut { background:var(--error); }
+  .tag-edge { background:var(--error); opacity:0.75; }
+  .tag-possible { background:var(--warning); }
+  .tag-detected { background:var(--text-muted); }
+  #transcript { max-height:620px; overflow-y:auto; position:relative; }
+  .insp-legend { display:flex; gap:14px; flex-wrap:wrap; font-size:0.85em; color:var(--text-secondary); margin-bottom:10px; }
+</style>
+
+<div id="episode-inspector">
+  <p style="margin-bottom:8px;"><a href="/ui/episodes" hx-get="/ui/episodes" hx-target="#main-content" hx-push-url="true">&larr; All episodes</a></p>
+  <h1 style="margin-bottom:4px;">{{ episode.title }}</h1>
+  <p class="insp-muted" style="margin-bottom:14px;">{{ feed_name }}</p>
+
+  <div class="card">
+    <div class="insp-tiles">
+      <div class="insp-tile"><div class="v">{{ summary.original_duration | clock }}</div><div class="l">Original length</div></div>
+      <div class="insp-tile"><div class="v">{{ summary.final_duration | clock }}</div><div class="l">Cleaned length</div></div>
+      <div class="insp-tile"><div class="v">{% if summary.cut_count %}{{ summary.removed | clock }}{% else %}0:00{% endif %}{% if summary.percent is not none and summary.cut_count %} <span style="font-size:0.55em; color:var(--text-secondary);">({{ '%.0f' | format(summary.percent) }}%)</span>{% endif %}</div><div class="l">Removed</div></div>
+      <div class="insp-tile"><div class="v">{{ summary.cut_count }}</div><div class="l">Cuts</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Listen</h2>
+    <div class="insp-player">
+      <span class="lbl">Original</span>
+      {% if original_url %}
+      <{{ media_tag }} id="player-original" controls preload="metadata" src="{{ original_url }}"></{{ media_tag }}>
+      {% else %}
+      <span class="insp-muted">Not available.
+        {% if not keep_data %}Turn on <code>storage.keep_inspection_data</code> to keep originals for new episodes.
+        {% else %}This episode was processed before originals were kept.{% endif %}</span>
+      {% endif %}
+    </div>
+    <div class="insp-player">
+      <span class="lbl">Cleaned</span>
+      {% if clean_url %}
+      <{{ media_tag }} id="player-clean" controls preload="metadata" src="{{ clean_url }}"></{{ media_tag }}>
+      {% else %}
+      <span class="insp-muted">Not available (the file may have been pruned).</span>
+      {% endif %}
+    </div>
+    {% if original_is_clean_file %}
+    <p class="insp-muted">Nothing was cut from this episode, so the original and cleaned audio are the same file.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>What was cut ({{ cuts | length }})</h2>
+    {% if cuts %}
+    <table>
+      <thead>
+        <tr><th>#</th><th>In the original</th><th style="text-align:right;">Length</th><th>What</th><th style="text-align:right;">Confidence</th><th>Hear it</th></tr>
+      </thead>
+      <tbody>
+        {% for cut in cuts %}
+        <tr>
+          <td>{{ cut.index }}</td>
+          <td style="white-space:nowrap; font-family:monospace;">{{ cut.start | clock }} &ndash; {{ cut.end | clock }}</td>
+          <td style="text-align:right; white-space:nowrap;">{{ '%.0f' | format(cut.duration) }}s</td>
+          <td>{{ cut.label }}{% if cut.parts > 1 %} <span class="insp-muted">({{ cut.parts }} ads in a row, cut as one)</span>{% endif %}</td>
+          <td style="text-align:right;">{% if cut.confidence is not none %}{{ '%.2f' | format(cut.confidence) }}{% else %}-{% endif %}</td>
+          <td style="white-space:nowrap;">
+            {% if original_url %}<button type="button" class="btn btn-small" data-act="orig" data-t="{{ [cut.start - 4, 0] | max }}" title="Play the original from just before this cut">&#9654; Original</button>{% endif %}
+            {% if clean_url %}<button type="button" class="btn btn-small btn-secondary" data-act="clean" data-t="{{ [cut.clean_at - 4, 0] | max }}" title="Play the cleaned audio from just before the splice">&#9654; Splice</button>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="insp-muted">No ads were cut from this episode.</p>
+    {% endif %}
+  </div>
+
+  {% if flagged %}
+  <div class="card">
+    <h2>Flagged but not cut ({{ flagged | length }})</h2>
+    <table>
+      <thead><tr><th>In the original</th><th style="text-align:right;">Length</th><th>What</th><th style="text-align:right;">Confidence</th><th>Why not cut</th><th></th></tr></thead>
+      <tbody>
+        {% for row in flagged %}
+        <tr>
+          <td style="white-space:nowrap; font-family:monospace;">{{ row.start | clock }} &ndash; {{ row.end | clock }}</td>
+          <td style="text-align:right;">{{ '%.0f' | format(row.duration) }}s</td>
+          <td>{{ row.label }}</td>
+          <td style="text-align:right;">{% if row.confidence is not none %}{{ '%.2f' | format(row.confidence) }}{% else %}-{% endif %}</td>
+          <td class="insp-muted">{{ row.reason }}</td>
+          <td>{% if original_url %}<button type="button" class="btn btn-small" data-act="orig" data-t="{{ [row.start - 4, 0] | max }}">&#9654; Original</button>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+      <h2 style="margin:0;">Transcript</h2>
+      {% if has_transcript %}
+      <div style="display:flex; gap:8px; align-items:center;">
+        <label class="insp-muted" style="display:flex; gap:4px; align-items:center;"><input type="checkbox" id="follow" checked> Follow playback</label>
+        <button type="button" class="btn btn-small btn-filter-active" data-filter="all">Everything</button>
+        <button type="button" class="btn btn-small btn-secondary" data-filter="flagged">Only cuts and flags</button>
+      </div>
+      {% endif %}
+    </div>
+    {% if has_transcript %}
+    <div class="insp-legend">
+      <span><span class="tag tag-cut">Cut</span>removed from the cleaned audio</span>
+      <span><span class="tag tag-edge">Edge</span>part of the line was removed</span>
+      <span><span class="tag tag-possible">Not cut</span>flagged, confidence too low</span>
+      <span><span class="tag tag-detected">Flagged</span>flagged but ignored</span>
+      <span>Click a time to play the original from there; click &#127911; to play the cleaned audio at that spot.</span>
+    </div>
+    <div id="transcript">
+      {% for line in lines %}
+      <div class="seg seg-{{ line.status }}" data-start="{{ line.start }}" data-status="{{ line.status }}">
+        <span class="t" data-act="line">{{ line.start | clock }}</span>
+        <div>
+          {% if line.status == 'cut' %}<span class="tag tag-cut">Cut{% if line.label %}: {{ line.label }}{% endif %}</span>
+          {% elif line.status == 'edge' %}<span class="tag tag-edge">Edge{% if line.label %}: {{ line.label }}{% endif %}</span>
+          {% elif line.status == 'possible' %}<span class="tag tag-possible">Not cut{% if line.label %}: {{ line.label }}{% endif %}</span>
+          {% elif line.status == 'detected' %}<span class="tag tag-detected">Flagged{% if line.label %}: {{ line.label }}{% endif %}</span>{% endif %}
+          {{ line.text }}{% if line.status != 'cut' %}<span class="c" data-act="lineclean" title="Play the cleaned audio at this spot">&#127911;</span>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="insp-muted">
+      The transcript was not kept for this episode.
+      {% if not keep_data %}Turn on <code>storage.keep_inspection_data</code> in your config to keep transcripts for new episodes.
+      {% else %}It was processed before transcripts were kept.{% endif %}
+    </p>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+(function () {
+  var root = document.getElementById('episode-inspector');
+  if (!root) return;
+  var orig = document.getElementById('player-original');
+  var clean = document.getElementById('player-clean');
+  var map = {{ time_map | tojson }};
+  var box = document.getElementById('transcript');
+  var follow = document.getElementById('follow');
+  var rows = Array.prototype.slice.call(root.querySelectorAll('.seg'));
+  var starts = rows.map(function (r) { return parseFloat(r.getAttribute('data-start')); });
+  var current = -1;
+
+  function origToClean(t) {
+    var removed = 0;
+    for (var i = 0; i < map.length; i++) {
+      if (t >= map[i].end) removed += map[i].end - map[i].start;
+      else if (t > map[i].start) return map[i].clean_at;
+      else break;
+    }
+    return Math.max(0, t - removed);
+  }
+  function cleanToOrig(t) {
+    var added = 0;
+    for (var i = 0; i < map.length; i++) {
+      if (t >= map[i].clean_at) added += map[i].end - map[i].start; else break;
+    }
+    return t + added;
+  }
+  function play(el, other, t) {
+    if (!el) return;
+    if (other) other.pause();
+    el.currentTime = Math.max(0, t);
+    var p = el.play();
+    if (p && p.catch) p.catch(function () {});
+  }
+  function rowAt(t) {
+    var lo = 0, hi = starts.length - 1, found = -1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (starts[mid] <= t) { found = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return found;
+  }
+  function highlight(i) {
+    if (i === current || i < 0) return;
+    if (current >= 0) rows[current].classList.remove('playing');
+    current = i;
+    var row = rows[i];
+    row.classList.add('playing');
+    if (follow && follow.checked && box && row.offsetParent) {
+      var top = row.offsetTop, bottom = top + row.offsetHeight;
+      if (top < box.scrollTop || bottom > box.scrollTop + box.clientHeight) {
+        box.scrollTop = top - box.clientHeight / 2 + row.offsetHeight / 2;
+      }
+    }
+  }
+  if (orig && clean) {
+    orig.addEventListener('play', function () { clean.pause(); });
+    clean.addEventListener('play', function () { orig.pause(); });
+  }
+  if (orig) orig.addEventListener('timeupdate', function () { highlight(rowAt(orig.currentTime)); });
+  if (clean) clean.addEventListener('timeupdate', function () { highlight(rowAt(cleanToOrig(clean.currentTime))); });
+
+  root.addEventListener('click', function (ev) {
+    var el = ev.target.closest('[data-act],[data-filter]');
+    if (!el || !root.contains(el)) return;
+    var act = el.getAttribute('data-act');
+    if (el.hasAttribute('data-filter')) {
+      var only = el.getAttribute('data-filter') === 'flagged';
+      Array.prototype.forEach.call(root.querySelectorAll('[data-filter]'), function (b) {
+        var active = b === el;
+        b.classList.toggle('btn-filter-active', active);
+        b.classList.toggle('btn-secondary', !active);
+      });
+      rows.forEach(function (r) { r.style.display = (only && r.getAttribute('data-status') === 'content') ? 'none' : ''; });
+      return;
+    }
+    var seg = el.closest('.seg');
+    var t = seg ? parseFloat(seg.getAttribute('data-start')) : parseFloat(el.getAttribute('data-t'));
+    if (act === 'line') {
+      if (orig) play(orig, clean, t); else if (clean) play(clean, orig, origToClean(t));
+    } else if (act === 'lineclean') {
+      if (clean) play(clean, orig, origToClean(t));
+    } else if (act === 'orig') {
+      play(orig, clean, t);
+    } else if (act === 'clean') {
+      play(clean, orig, t);
+    }
+  });
+})();
+</script>
+{% endblock %}

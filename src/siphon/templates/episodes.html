@@ -1,0 +1,61 @@
+{% if not is_htmx %}{% extends "base.html" %}{% endif %}
+{% if not is_htmx %}{% block title_suffix %} - Episodes{% endblock %}{% endif %}
+{% block content %}
+<h1>Episodes</h1>
+
+<div class="card" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+  <form method="get" action="/ui/episodes" style="display:flex; gap:8px; align-items:center; margin:0;">
+    <label for="feed-filter" style="color:var(--text-label);">Feed</label>
+    <select id="feed-filter" name="feed" onchange="this.form.submit()">
+      <option value="">All feeds</option>
+      {% for name in feeds %}
+      <option value="{{ name }}" {% if name == selected_feed %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </form>
+  <span style="color:var(--text-secondary); font-size:0.9em;">
+    Open an episode to read its transcript, see what was cut, and play the original and cleaned audio.
+  </span>
+</div>
+
+{% if not keep_data %}
+<div class="flash flash-info">
+  The original audio and transcript are only kept when <code>storage.keep_inspection_data</code> is
+  <code>true</code> in your config. Episodes processed before that was on can still show their list of cuts.
+</div>
+{% endif %}
+
+<div class="card">
+  {% if items %}
+  <table>
+    <thead>
+      <tr>
+        <th>Episode</th>
+        <th>Feed</th>
+        <th>Processed</th>
+        <th style="text-align:right;">Cuts</th>
+        <th style="text-align:right;">Removed</th>
+        <th>Kept for inspection</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td><a href="{{ item.url }}" hx-get="{{ item.url }}" hx-target="#main-content" hx-push-url="true">{{ item.title }}</a></td>
+        <td style="color:var(--text-secondary);">{{ item.feed_name }}</td>
+        <td style="color:var(--text-secondary); white-space:nowrap;">{{ item.when }}</td>
+        <td style="text-align:right;">{{ item.cut_count }}</td>
+        <td style="text-align:right; white-space:nowrap;">{% if item.cut_count %}{{ item.removed | clock }}{% else %}-{% endif %}</td>
+        <td style="white-space:nowrap;">
+          <span class="badge {% if item.has_transcript %}badge-pod{% endif %}" style="{% if not item.has_transcript %}background:var(--btn-secondary); color:var(--text-muted);{% endif %}">transcript</span>
+          <span class="badge {% if item.has_original %}badge-pod{% endif %}" style="{% if not item.has_original %}background:var(--btn-secondary); color:var(--text-muted);{% endif %}">original audio</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:var(--text-secondary);">No episodes have finished ad detection yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -22,6 +22,7 @@ import functools
 import json
 import logging
 import os
+import shutil
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -36,6 +37,8 @@ from siphon.activity import (
 from siphon.ad_detect import ClaudeAuthError, ClaudeTransientError
 from siphon.config import SiphonConfig, resolve_feed
 from siphon.db import Database
+from siphon.episode_files import original_path, remove_extras
+from siphon.episode_files import transcript_path as _episode_transcript_path
 from siphon.downloader import (
     download_video,
     extract_feed_metadata,
@@ -76,11 +79,7 @@ def recover_interrupted(config: SiphonConfig, db: Database) -> None:
 
 def _transcript_path(config: SiphonConfig, feed_name: str, video_id: str) -> str:
     """Return the expected transcript JSON path for an episode."""
-    import re
-    safe_id = re.sub(r'[^\w-]', '_', video_id)[:80]
-    return os.path.join(
-        config.storage.download_dir, feed_name, f"{safe_id}_transcript.json"
-    )
+    return _episode_transcript_path(config.storage.download_dir, feed_name, video_id)
 
 
 async def _get_file_duration(loop, path: str) -> int | None:
@@ -111,6 +110,41 @@ def _delete_file(path: str) -> None:
         os.remove(path)
     except OSError:
         pass
+
+
+def _cut_keeping_original(
+    file_path: str,
+    segments: list[dict],
+    keep_original: bool,
+    snap_to_silence: bool,
+    snap_window: float,
+    applied: list,
+) -> tuple[float | None, float | None]:
+    """Cut ``segments`` out of ``file_path`` in place, first keeping a copy of the original.
+
+    Returns (duration before, duration after) in seconds; either may be None if unreadable.
+    ``applied`` is filled with the ranges that were actually removed.
+    """
+    from siphon.cutter import cut_segments, get_duration
+
+    try:
+        before = get_duration(file_path)
+    except Exception:
+        before = None
+    if keep_original:
+        original = original_path(file_path)
+        # never overwrite the true original with an already-cut file (e.g. on a retry)
+        if not os.path.exists(original):
+            shutil.copy2(file_path, original)
+    cut_segments(
+        file_path, segments,
+        snap_to_silence=snap_to_silence, snap_window=snap_window, applied=applied,
+    )
+    try:
+        after = get_duration(file_path)
+    except Exception:
+        after = None
+    return before, after
 
 
 # ---------------------------------------------------------------------- #
@@ -1151,16 +1185,19 @@ async def _process_one_claude(ep: dict, config: SiphonConfig, db: Database) -> N
         # Cut with ffmpeg — validate output, retry once, fall back to uncut if still bad
         ffmpeg_duration = 0.0
         cut_failed = False
+        keep_data = config.storage.keep_inspection_data
+        applied_cuts: list[dict] = []
+        original_duration = final_duration = None
         if high_confidence and file_path:
             t0_ffmpeg = time.time()
             for attempt in range(2):
                 try:
-                    await loop.run_in_executor(
+                    original_duration, final_duration = await loop.run_in_executor(
                         None,
                         functools.partial(
-                            cut_segments, file_path, high_confidence,
-                            snap_to_silence=config.llm.snap_cuts_to_silence,
-                            snap_window=config.llm.snap_window_seconds,
+                            _cut_keeping_original, file_path, high_confidence, keep_data,
+                            config.llm.snap_cuts_to_silence, config.llm.snap_window_seconds,
+                            applied_cuts,
                         ),
                     )
                     ffmpeg_duration = time.time() - t0_ffmpeg
@@ -1174,17 +1211,21 @@ async def _process_one_claude(ep: dict, config: SiphonConfig, db: Database) -> N
                         log_activity(f"LLM cut failed, serving uncut: {title[:40]}", feed=feed_name, level="warning")
                         cut_failed = True
                         high_confidence = []  # Record 0 cuts applied
+                        applied_cuts.clear()
+                        if keep_data:
+                            _delete_file(original_path(file_path))  # file is unchanged; no copy needed
 
         # Normalize timestamps after cuts
         if file_path and not cut_failed:
             from siphon.cutter import normalize_timestamps
             await loop.run_in_executor(None, normalize_timestamps, file_path)
 
-        # Delete transcript file
-        try:
-            os.remove(transcript_file)
-        except OSError:
-            pass
+        # Delete transcript file (kept for the Episodes page when keep_inspection_data is on)
+        if not keep_data:
+            try:
+                os.remove(transcript_file)
+            except OSError:
+                pass
 
         # Update file_size after cuts
         new_size = None
@@ -1197,6 +1238,14 @@ async def _process_one_claude(ep: dict, config: SiphonConfig, db: Database) -> N
             "high_confidence": high_confidence,
             "marginal": marginal,
         }
+        if applied_cuts:
+            audit["applied_cuts"] = [
+                {"start": round(c["start"], 2), "end": round(c["end"], 2)} for c in applied_cuts
+            ]
+        if original_duration is not None:
+            audit["original_duration"] = round(original_duration, 2)
+        if final_duration is not None:
+            audit["final_duration"] = round(final_duration, 2)
 
         update_kwargs = {
             "llm_trim_status": "done",
@@ -1278,6 +1327,7 @@ async def _prune_disk(config: SiphonConfig, db: Database) -> None:
                         os.remove(ep["file_path"])
                     except OSError:
                         pass
+                remove_extras(config.storage.download_dir, ep)
                 db.update_episode_status(ep["video_id"], ep["feed_name"], "pruned")
                 logger.info("Pruned %s from %s (per-feed limit)", ep["video_id"], ep["feed_name"])
 
@@ -1295,6 +1345,7 @@ async def _prune_disk(config: SiphonConfig, db: Database) -> None:
                     os.remove(ep["file_path"])
                 except OSError:
                     pass
+            remove_extras(config.storage.download_dir, ep)
             db.update_episode_status(ep["video_id"], ep["feed_name"], "pruned")
             usage -= file_size
             logger.info("Pruned %s from %s (disk limit)", ep["video_id"], ep["feed_name"])
@@ -1436,15 +1487,8 @@ async def _auto_prune_pocketcasts(config: SiphonConfig, db: Database) -> None:
                 except OSError:
                     pass
 
-            # Delete transcript
-            transcript = os.path.join(
-                config.storage.download_dir, fc.name,
-                f"{ep['video_id']}_transcript.json",
-            )
-            try:
-                os.remove(transcript)
-            except OSError:
-                pass
+            # Delete the kept original and transcript
+            remove_extras(config.storage.download_dir, ep)
 
             db.update_episode_status(ep["video_id"], fc.name, "pruned")
             pruned_total += 1

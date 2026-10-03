@@ -24,7 +24,7 @@ def extract_audio(video_path: str, output_path: str) -> None:
         output_path,
     ]
     logger.info("Extracting audio from %s to %s", video_path, output_path)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=600)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg audio extraction failed: {result.stderr[:300]}")
 
@@ -38,7 +38,7 @@ def get_duration(file_path: str) -> float:
         "-of", "csv=p=0",
         file_path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30)
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe failed: {result.stderr[:300]}")
     return float(result.stdout.strip())
@@ -55,7 +55,7 @@ def validate_file(file_path: str) -> bool:
         "-of", "csv=p=0",
         file_path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30)
     if result.returncode != 0:
         logger.warning("File validation failed for %s: %s", file_path, result.stderr[:200])
         return False
@@ -88,7 +88,7 @@ def has_real_video_stream(file_path: str) -> bool:
         "-of", "csv=p=0",
         file_path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30)
     if result.returncode != 0:
         return False
     for line in result.stdout.strip().split("\n"):
@@ -122,7 +122,7 @@ def normalize_timestamps(file_path: str) -> bool:
         "-of", "csv=p=0",
         file_path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30)
     if result.returncode != 0:
         return False
 
@@ -151,7 +151,7 @@ def normalize_timestamps(file_path: str) -> bool:
             "-avoid_negative_ts", "make_zero",
             temp_output,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=600)
         if result.returncode != 0:
             logger.warning("Timestamp normalization failed: %s", result.stderr[:200])
             return False
@@ -190,13 +190,14 @@ def find_nearest_silence(
         "-f", "null", "-",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=120)
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("Silence detection failed near %.1fs: %s", target, exc)
         return target
 
-    starts = [float(x) for x in re.findall(r"silence_start: (-?[\d.]+)", result.stderr)]
-    ends = [float(x) for x in re.findall(r"silence_end: (-?[\d.]+)", result.stderr)]
+    output = result.stderr or ""
+    starts = [float(x) for x in re.findall(r"silence_start: (-?[\d.]+)", output)]
+    ends = [float(x) for x in re.findall(r"silence_end: (-?[\d.]+)", output)]
     # A silence that runs past the end of the slice has a start but no end
     if len(ends) < len(starts):
         ends.append(duration)
@@ -248,7 +249,7 @@ def audio_stream_info(file_path: str) -> dict | None:
         "-of", "json", file_path,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30)
         streams = json.loads(result.stdout or "{}").get("streams", [])
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None
@@ -279,7 +280,7 @@ def make_chime(output_path: str, info: dict, volume: float = 0.5) -> float | Non
         output_path,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=60)
         if result.returncode != 0:
             logger.warning("Could not make the chime: %s", result.stderr[-300:])
             return None
@@ -403,7 +404,7 @@ def cut_segments(
                 "-c", "copy",
                 seg_path,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=300)
             if result.returncode != 0:
                 logger.error("ffmpeg segment extraction failed: %s", result.stderr[:300])
                 raise RuntimeError(f"ffmpeg segment extraction failed for range {start}-{end}")
@@ -426,7 +427,7 @@ def cut_segments(
         list_path = os.path.join(tmpdir, "concat.txt")
         chimes_added = 0
         pieces = iter(segment_files)
-        with open(list_path, "w") as f:
+        with open(list_path, "w", encoding="utf-8") as f:
             for item in plan:
                 if item[0] == "keep":
                     f.write(_concat_line(next(pieces)))
@@ -448,7 +449,7 @@ def cut_segments(
             "-avoid_negative_ts", "make_zero",
             temp_output,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=600)
         if result.returncode != 0:
             logger.error("ffmpeg concat failed: %s", result.stderr[:300])
             raise RuntimeError(f"ffmpeg concat failed: {result.stderr[:300]}")

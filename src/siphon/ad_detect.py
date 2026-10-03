@@ -244,7 +244,8 @@ def detect_ads(
                     cmd,
                     stdin=stdin_f,
                     capture_output=True,
-                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=CLI_TIMEOUT_SECONDS,
                     creationflags=_cli_creationflags(),
                 )

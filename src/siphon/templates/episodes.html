@@ -4,7 +4,7 @@
 <h1>Episodes</h1>
 
 <div class="card" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-  <form method="get" action="/ui/episodes" style="display:flex; gap:8px; align-items:center; margin:0;">
+  <form method="get" action="/ui/episodes" style="display:flex; gap:8px; align-items:center; margin:0; flex-wrap:wrap;">
     <label for="feed-filter" style="color:var(--text-label);">Feed</label>
     <select id="feed-filter" name="feed" onchange="this.form.submit()">
       <option value="">All feeds</option>
@@ -12,9 +12,15 @@
       <option value="{{ name }}" {% if name == selected_feed %}selected{% endif %}>{{ name }}</option>
       {% endfor %}
     </select>
+    <label style="display:flex; gap:4px; align-items:center; color:var(--text-label);" title="Include episodes that were filtered, pruned, failed or are still waiting">
+      <input type="checkbox" name="show" value="all" {% if show_all %}checked{% endif %} onchange="this.form.submit()"> Every episode
+    </label>
   </form>
+  <input type="text" id="episode-search" placeholder="Search titles..." style="min-width:200px;"
+         oninput="(function(q){document.querySelectorAll('#episodes-table tbody tr').forEach(function(r){r.style.display=r.textContent.toLowerCase().indexOf(q)<0?'none':'';});})(this.value.toLowerCase())">
   <span style="color:var(--text-secondary); font-size:0.9em;">
-    Open an episode to read its transcript, see what was cut, and play the original and cleaned audio.
+    {% if show_all %}Every episode Siphon has seen, newest published first. Open one to process or download it again.
+    {% else %}Open an episode to read its transcript, see what was cut, and play the original and cleaned audio.{% endif %}
   </span>
 </div>
 
@@ -27,12 +33,13 @@
 
 <div class="card">
   {% if items %}
-  <table>
+  <table id="episodes-table">
     <thead>
       <tr>
         <th>Episode</th>
         <th>Feed</th>
-        <th>Processed</th>
+        <th>{% if show_all %}Published{% else %}Processed{% endif %}</th>
+        {% if show_all %}<th>Status</th>{% endif %}
         <th style="text-align:right;">Cuts</th>
         <th style="text-align:right;">Removed</th>
         <th>Kept for inspection</th>
@@ -44,6 +51,7 @@
         <td><a href="{{ item.url }}" hx-get="{{ item.url }}" hx-target="#main-content" hx-push-url="true">{{ item.title }}</a></td>
         <td style="color:var(--text-secondary);">{{ item.feed_name }}</td>
         <td style="color:var(--text-secondary); white-space:nowrap;">{{ item.when }}</td>
+        {% if show_all %}<td style="white-space:nowrap;">{{ item.status }}</td>{% endif %}
         <td style="text-align:right;">{{ item.cut_count }}</td>
         <td style="text-align:right; white-space:nowrap;">{% if item.cut_count %}{{ item.removed | clock }}{% else %}-{% endif %}</td>
         <td style="white-space:nowrap;">
@@ -55,7 +63,7 @@
     </tbody>
   </table>
   {% else %}
-  <p style="color:var(--text-secondary);">No episodes have finished ad detection yet.</p>
+  <p style="color:var(--text-secondary);">{% if show_all %}No episodes found.{% else %}No episodes have finished ad detection yet. Tick "Every episode" to see the rest.{% endif %}</p>
   {% endif %}
 </div>
 {% endblock %}

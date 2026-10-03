@@ -21,6 +21,14 @@ def original_path(file_path: str) -> str:
     return f"{stem}.orig{ext}"
 
 
+def staging_path(file_path: str) -> str:
+    """Where a re-download is written before it replaces the episode file.
+
+    The suffix is deliberately not one that Siphon's temp-file cleanup deletes.
+    """
+    return f"{file_path}.redownload"
+
+
 def transcript_path(download_dir: str, feed_name: str, video_id: str) -> str:
     """Path of the transcript JSON for an episode."""
     safe_id = re.sub(r"[^\w-]", "_", video_id)[:80]
@@ -32,6 +40,7 @@ def remove_extras(download_dir: str, episode: dict) -> None:
     paths = []
     if episode.get("file_path"):
         paths.append(original_path(episode["file_path"]))
+        paths.append(staging_path(episode["file_path"]))
     feed_name, video_id = episode["feed_name"], episode["video_id"]
     paths.append(transcript_path(download_dir, feed_name, video_id))
     # older code paths used the raw (unsanitised) video id

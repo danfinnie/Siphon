@@ -57,7 +57,8 @@
       <{{ media_tag }} id="player-original" controls preload="metadata" src="{{ original_url }}"></{{ media_tag }}>
       {% else %}
       <span class="insp-muted">Not available.
-        {% if not keep_data %}Turn on <code>storage.keep_inspection_data</code> to keep originals for new episodes.
+        {% if episode.status != 'done' %}This episode has no processed audio.
+        {% elif not keep_data %}Turn on <code>storage.keep_inspection_data</code> to keep originals for new episodes.
         {% else %}This episode was processed before originals were kept.{% endif %}</span>
       {% endif %}
     </div>
@@ -74,15 +75,23 @@
     {% endif %}
   </div>
 
-  {% if reprocess.busy %}
-  <div class="flash flash-info" id="reprocess-status">This episode is being processed again: {{ reprocess.status_text }}. This page refreshes by itself.</div>
+  {% if reprocess.waiting_for_download %}
+  <div class="flash flash-info" id="reprocess-status">Waiting to be downloaded again. {% if clean_url %}The current version stays in your feed until the new one has downloaded. {% endif %}This page refreshes by itself.</div>
+  {% elif reprocess.busy %}
+  <div class="flash flash-info" id="reprocess-status">This episode is being processed: {{ reprocess.status_text }}. This page refreshes by itself.</div>
+  {% endif %}
+  {% if episode.status in ('filtered', 'pruned', 'failed') %}
+  <div class="flash flash-info">This episode is <strong>{{ episode.status }}</strong>{% if episode.filter_reason %} ({{ episode.filter_reason }}){% endif %}, so there is no processed audio to listen to.{% if episode.error %} {{ episode.error }}{% endif %}</div>
+  {% elif episode.error %}
+  <div class="flash flash-error">{{ episode.error }}</div>
   {% endif %}
 
   <div class="card">
     <h2>Process again</h2>
     <p class="insp-muted" style="margin-bottom:12px;">
-      Changed a setting and want to see its effect on this episode? It goes back through the queue using the kept original audio,
-      and leaves your feed until it is done. This page shows the new result afterwards.
+      Changed a setting and want to see its effect on this episode? The first two buttons use the kept original audio.
+      The third downloads the episode again, so it works for any episode, even without a kept original.
+      An episode being redone leaves your feed until it is done. This page shows the new result afterwards.
     </p>
     <div class="insp-reprocess">
       <form method="post" action="/ui/episode/reprocess"
@@ -105,6 +114,17 @@
         <div class="insp-muted" style="margin-top:6px;">
           {% if reprocess.transcribe_problem %}{{ reprocess.transcribe_problem }}
           {% else %}Runs Whisper again too. Use after changing the Whisper model or the voice filter.{% endif %}
+        </div>
+      </form>
+      <form method="post" action="/ui/episode/reprocess"
+            onsubmit="return confirm('Download this episode again and process it from scratch? Some podcasts insert different ads on every download, so the new copy may differ. Your current copy stays in the feed until the new one has downloaded.');">
+        <input type="hidden" name="feed" value="{{ feed_name }}">
+        <input type="hidden" name="id" value="{{ episode.video_id }}">
+        <input type="hidden" name="mode" value="redownload">
+        <button type="submit" class="btn btn-secondary" {% if reprocess.redownload_problem %}disabled{% endif %}>{{ reprocess.redownload_label }}</button>
+        <div class="insp-muted" style="margin-top:6px;">
+          {% if reprocess.redownload_problem %}{{ reprocess.redownload_problem }}
+          {% else %}Fetches the episode from the podcast's feed again, then transcribes and cleans it. Podcasts that insert different ads on each download may give a different result.{% endif %}
         </div>
       </form>
     </div>
@@ -197,9 +217,10 @@
     </div>
     {% else %}
     <p class="insp-muted">
-      The transcript was not kept for this episode.
+      {% if episode.status != 'done' %}There is no transcript because this episode has not been processed.
+      {% else %}The transcript was not kept for this episode.
       {% if not keep_data %}Turn on <code>storage.keep_inspection_data</code> in your config to keep transcripts for new episodes.
-      {% else %}It was processed before transcripts were kept.{% endif %}
+      {% else %}It was processed before transcripts were kept.{% endif %}{% endif %}
     </p>
     {% endif %}
   </div>

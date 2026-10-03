@@ -85,7 +85,7 @@ class TestRedoAdDetection:
         await _post(client, "detect")
         page = await client.get("/ui/episode", params={"feed": "show", "id": "ep1", "queued": "detect"})
         assert "Queued for ad detection again" in page.text
-        assert "being processed again: Waiting for ad detection (Claude)" in page.text
+        assert "being processed: Waiting for ad detection (Claude)" in page.text
         assert "location.reload()" in page.text                  # refreshes itself while queued
 
 
@@ -180,7 +180,7 @@ class TestPageButtons:
     async def test_no_auto_refresh_when_idle(self, app, config, client):
         seed(app, config)
         text = (await client.get("/ui/episode", params={"feed": "show", "id": "ep1"})).text
-        assert "location.reload()" not in text and "being processed again" not in text
+        assert "location.reload()" not in text and "being processed" not in text
 
 
 class TestEndToEnd:

@@ -37,7 +37,7 @@ from siphon.activity import (
 from siphon.ad_detect import ClaudeAuthError, ClaudeTransientError
 from siphon.config import SiphonConfig, resolve_feed
 from siphon.db import Database
-from siphon.episode_files import original_path, remove_extras
+from siphon.episode_files import original_path, remove_extras, staging_path
 from siphon.episode_files import transcript_path as _episode_transcript_path
 from siphon.downloader import (
     download_video,
@@ -636,6 +636,8 @@ async def _process_downloads_inner(config: SiphonConfig, db: Database) -> None:
                     )
                 finally:
                     worker_done("download")
+
+    await _redownload_pass(config, db)
 
     await _prune_disk(config, db)
     worker_done("checking_downloads")
@@ -1314,6 +1316,108 @@ async def _process_one_claude(ep: dict, config: SiphonConfig, db: Database) -> N
             log_activity(f"Claude: failed (attempt {new_retry}/3)", feed=feed_name, level="error")
     finally:
         worker_done("claude")
+
+
+async def _redownload_pass(config: SiphonConfig, db: Database) -> None:
+    """Download again the episodes the user asked for on the Episodes page.
+
+    Each one keeps its current copy, and stays in the feed, until the new download has finished and
+    been checked. A request that cannot be met records why on the episode and changes nothing else.
+    """
+    for episode in db.get_redownload_requests(limit=20):
+        if check_paused():
+            return
+        title = episode.get("title") or episode["video_id"]
+        feed_config = next((fc for fc in config.feeds if fc.name == episode["feed_name"]), None)
+        if feed_config is None:
+            _redownload_failed(db, episode, "This episode's feed is no longer in the config.")
+            continue
+        resolved = resolve_feed(feed_config, config.defaults)
+        if resolved.type != "podcast":
+            _redownload_failed(db, episode, "Downloading again is only available for podcast feeds.")
+            continue
+
+        log_activity(f"Re-downloading {title[:50]}", feed=episode["feed_name"])
+        worker_start("download")
+        try:
+            problem = await _redownload_podcast_episode(episode, resolved, config, db)
+        except Exception as exc:
+            logger.exception("Re-download failed for %s/%s", episode["feed_name"], episode["video_id"])
+            problem = f"The download failed: {exc}"
+        finally:
+            worker_done("download")
+        if problem:
+            _redownload_failed(db, episode, problem)
+
+
+def _redownload_failed(db: Database, episode: dict, message: str) -> None:
+    logger.warning("Re-download of %s/%s not done: %s", episode["feed_name"], episode["video_id"], message)
+    log_activity(f"Re-download not done: {message[:80]}", feed=episode["feed_name"], level="warning")
+    db.update_episode_status(
+        episode["video_id"], episode["feed_name"], episode["status"],
+        redownload_requested=0, error=f"{message} Your existing copy was left as it was.",
+    )
+
+
+async def _redownload_podcast_episode(episode, resolved, config, db) -> str | None:
+    """Download a podcast episode again and swap it in. Returns None on success, or why it was not done.
+
+    The new audio goes to a staging file and replaces the episode's file only once it has been
+    downloaded, checked and found long enough; until then nothing existing is touched. The kept
+    original and the transcript belong to the old audio, so they are removed when the new file goes in.
+    """
+    from siphon.cutter import normalize_timestamps, validate_file
+    from siphon.podcast import download_podcast_audio, episode_filename, fetch_podcast_rss, parse_podcast_feed
+
+    video_id = episode["video_id"]   # the GUID for podcasts
+    feed_name = episode["feed_name"]
+    loop = asyncio.get_event_loop()
+
+    xml_bytes = await loop.run_in_executor(None, fetch_podcast_rss, resolved.url)
+    feed_data = parse_podcast_feed(xml_bytes)
+    audio_url = next((ep["audio_url"] for ep in feed_data.get("episodes", []) if ep["guid"] == video_id), None)
+    if audio_url is None:
+        return "The podcast's feed no longer lists this episode, so it cannot be downloaded again."
+
+    output_path = os.path.join(config.storage.download_dir, feed_name, episode_filename(video_id, audio_url))
+    staging = staging_path(output_path)
+    try:
+        await loop.run_in_executor(None, download_podcast_audio, audio_url, staging)
+
+        if not await loop.run_in_executor(None, validate_file, staging):
+            return "The new download was corrupt."
+        duration = await _get_file_duration(loop, staging)
+        filter_reason = _post_download_filter(duration, resolved)
+        if filter_reason:
+            return f"The new download was skipped by the length filter ({filter_reason}, {duration}s)."
+
+        old_path = episode.get("file_path")
+        try:
+            os.replace(staging, output_path)   # fails, leaving the old copy in place, if it is in use
+        except OSError as exc:
+            return f"The new file could not replace the old one ({exc}). Try again in a moment."
+    finally:
+        _delete_file(staging)
+
+    # the new audio is in; what belonged to the old audio goes
+    if old_path and old_path != output_path:
+        _delete_file(old_path)
+    remove_extras(config.storage.download_dir, {**episode, "file_path": old_path or output_path})
+
+    await loop.run_in_executor(None, normalize_timestamps, output_path)
+    file_size = os.path.getsize(output_path)
+
+    update: dict = dict(
+        file_path=output_path, file_size=file_size, mime_type="audio/mpeg", duration=duration,
+        redownload_requested=0, error=None, llm_retry_count=0,
+    )
+    if resolved.llm_trim:
+        update.update(llm_trim_status="pending", llm_cuts_applied=0, llm_segments_json=None)
+    db.update_episode_status(
+        video_id, feed_name, "pending_whisper" if resolved.llm_trim else "done", **update,
+    )
+    logger.info("Re-downloaded podcast %s for feed %s", video_id, feed_name)
+    return None
 
 
 # ---------------------------------------------------------------------- #

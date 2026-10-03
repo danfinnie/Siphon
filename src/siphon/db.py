@@ -89,6 +89,8 @@ MIGRATIONS = [
     # Pocket Casts podcast UUID for auto-prune
     "ALTER TABLE feeds ADD COLUMN pc_uuid TEXT",
     "ALTER TABLE feeds ADD COLUMN pc_last_checked TEXT",
+    # Episode page: download this episode again (the current copy stays until the new one is ready)
+    "ALTER TABLE episodes ADD COLUMN redownload_requested INTEGER NOT NULL DEFAULT 0",
 ]
 
 
@@ -253,6 +255,45 @@ class Database:
                 "SELECT * FROM episodes WHERE feed_name = ?",
                 (feed_name,),
             ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_recent_episodes(self, limit: int = 300, feed_name: str | None = None) -> list[dict]:
+        """Every episode Siphon knows about, whatever its status, newest published first."""
+        sql = "SELECT * FROM episodes"
+        params: list = []
+        if feed_name:
+            sql += " WHERE feed_name = ?"
+            params.append(feed_name)
+        sql += " ORDER BY COALESCE(upload_date, '') DESC, discovered_at DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def request_redownload(self, video_id: str, feed_name: str, status: str) -> None:
+        """Ask for an episode to be downloaded and processed again.
+
+        A finished (``done``) episode keeps its current copy, and stays in the feed, until the new
+        download is ready; it is only flagged. An episode with no usable copy (filtered, pruned,
+        failed) goes straight back into the normal download queue.
+        """
+        if status == "done":
+            self.update_episode_status(video_id, feed_name, "done", redownload_requested=1, error=None)
+        else:
+            self.update_episode_status(
+                video_id, feed_name, "eligible",
+                redownload_requested=0, retry_count=0, error=None, filter_reason=None,
+                llm_trim_status=None, llm_cuts_applied=0, llm_retry_count=0, llm_segments_json=None,
+            )
+
+    def get_redownload_requests(self, limit: int = 20) -> list[dict]:
+        """Finished episodes flagged to be downloaded again, oldest request first."""
+        rows = self.conn.execute(
+            """SELECT e.*, f.feed_type FROM episodes e
+               JOIN feeds f ON e.feed_name = f.name
+               WHERE e.redownload_requested = 1 AND e.status = 'done'
+               ORDER BY e.updated_at ASC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
         return [dict(r) for r in rows]
 
     def get_processed_episodes(self, limit: int = 200, feed_name: str | None = None) -> list[dict]:

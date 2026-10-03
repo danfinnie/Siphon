@@ -1,13 +1,17 @@
 """Put a finished episode back in the queue so it is processed again with the current settings.
 
-Two ways, both starting from the kept original audio (``storage.keep_inspection_data``):
+Three ways. The first two start from the kept original audio (``storage.keep_inspection_data``):
 
 * ``detect``     reuse the saved transcript and run ad detection and cutting again
                  (new prompt, effort, merge gap, snapping, ...). Fast: no Whisper.
 * ``transcribe`` throw the transcript away and run Whisper too (new model, voice filter, ...).
+* ``redownload`` download the episode again from the podcast's feed and process it from scratch.
+                 Needs no kept original, so it works for any episode, including ones that were
+                 filtered, pruned or failed.
 
-The episode is restored to its original audio and sent back to the Claude or Whisper queue; the
-normal workers do the rest. It drops out of the RSS feed until it is done again.
+For the first two the episode is restored to its original audio and sent back to the Claude or Whisper
+queue; for ``redownload`` the download worker fetches it (a finished episode keeps its current copy,
+and stays in the feed, until the new download is in). The normal workers do the rest.
 """
 
 from __future__ import annotations
@@ -19,11 +23,17 @@ from siphon.config import SiphonConfig, resolve_feed
 from siphon.db import Database
 from siphon.episode_files import original_path, restore_original, transcript_path
 
-MODES = ("detect", "transcribe")
+MODES = ("detect", "transcribe", "redownload")
+
+# Statuses in which an episode is part-way through the pipeline.
+BUSY_STATUSES = {"pending", "eligible", "downloading", "pending_whisper", "pending_claude"}
+# Statuses from which an episode can be downloaded again.
+REDOWNLOADABLE_STATUSES = {"done", "filtered", "pruned", "failed"}
 
 QUEUED_MESSAGES = {
     "detect": "Queued for ad detection again with your current settings. The episode leaves your feed until it is done.",
     "transcribe": "Queued to be transcribed and checked again with your current settings. The episode leaves your feed until it is done.",
+    "redownload": "Queued to be downloaded again. If it has a copy now, that stays in your feed until the new one has downloaded; it is then processed from scratch.",
 }
 
 STATUS_TEXT = {
@@ -39,12 +49,33 @@ class ReprocessError(Exception):
     """The episode cannot be reprocessed; the message says why, in plain words."""
 
 
+def check_redownload(config: SiphonConfig, episode: dict) -> str | None:
+    """Return why ``episode`` cannot be downloaded again, or None if it can."""
+    feed_config = next((f for f in config.feeds if f.name == episode["feed_name"]), None)
+    if feed_config is None:
+        return "This episode's feed is no longer in the config."
+    if resolve_feed(feed_config, config.defaults).type != "podcast":
+        return "Downloading again is only available for podcast feeds."
+    if episode.get("redownload_requested"):
+        return "This episode is already waiting to be downloaded again."
+    if episode.get("status") not in REDOWNLOADABLE_STATUSES:
+        return "This episode is still being processed. Try again when it has finished."
+    return None
+
+
 def check_reprocess(config: SiphonConfig, episode: dict, mode: str) -> str | None:
     """Return why ``episode`` cannot be reprocessed in ``mode``, or None if it can."""
     if mode not in MODES:
         return "Unknown way to reprocess."
+    if mode == "redownload":
+        return check_redownload(config, episode)
     if episode.get("status") != "done":
-        return "This episode is still being processed. Try again when it has finished."
+        if episode.get("status") in BUSY_STATUSES:
+            return "This episode is still being processed. Try again when it has finished."
+        return (
+            f"This episode is {episode.get('status')}, so there is no processed copy to redo. "
+            "Use \"Download and process\" instead."
+        )
 
     feed_config = next((f for f in config.feeds if f.name == episode["feed_name"]), None)
     if feed_config is None:
@@ -79,6 +110,10 @@ def reprocess_episode(config: SiphonConfig, db: Database, episode: dict, mode: s
     problem = check_reprocess(config, episode, mode)
     if problem:
         raise ReprocessError(problem)
+
+    if mode == "redownload":
+        db.request_redownload(episode["video_id"], episode["feed_name"], episode["status"])
+        return QUEUED_MESSAGES["redownload"]
 
     file_path = episode["file_path"]
     try:

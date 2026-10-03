@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from urllib.parse import quote
 
@@ -11,13 +12,14 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from siphon import inspector
 from siphon.episode_files import original_path, transcript_path
 from siphon.reprocess import (
-    QUEUED_MESSAGES, STATUS_TEXT, ReprocessError, check_reprocess, reprocess_episode,
+    BUSY_STATUSES, QUEUED_MESSAGES, STATUS_TEXT, ReprocessError, check_reprocess, reprocess_episode,
 )
-from siphon.routes.ui import _flash, _get_messages, _redirect, _render, templates
+from siphon.routes.ui import _flash, _get_background_tasks, _get_messages, _redirect, _render, templates
 
 # Same prefix as the rest of the web UI, so the localhost-only rule in the security
 # middleware covers these pages and the audio they stream.
 router = APIRouter(prefix="/ui")
+logger = logging.getLogger(__name__)
 
 MEDIA_TYPES = {
     ".mp3": "audio/mpeg",
@@ -53,19 +55,31 @@ def _episode_url(feed_name: str, video_id: str) -> str:
     return f"/ui/episode?feed={quote(feed_name, safe='')}&id={quote(video_id, safe='')}"
 
 
+def _upload_date(value: str | None) -> str:
+    """YYYYMMDD -> YYYY-MM-DD (anything else is shown as it is)."""
+    value = (value or "").strip()
+    return f"{value[:4]}-{value[4:6]}-{value[6:8]}" if len(value) == 8 and value.isdigit() else value
+
+
 @router.get("/episodes", response_class=HTMLResponse)
-async def episodes_page(request: Request, feed: str = ""):
+async def episodes_page(request: Request, feed: str = "", show: str = ""):
     db = request.app.state.db
     config = request.app.state.config
+    show_all = show == "all"
+    if show_all:
+        rows = db.get_recent_episodes(limit=500, feed_name=feed or None)
+    else:
+        rows = db.get_processed_episodes(limit=300, feed_name=feed or None)
     items = []
-    for ep in db.get_processed_episodes(limit=300, feed_name=feed or None):
+    for ep in rows:
         audit = inspector.parse_audit(ep.get("llm_segments_json"))
         cuts = inspector.build_cut_list(audit)
         paths = _audio_paths(ep, audit)
         items.append({
             "title": ep.get("title") or ep["video_id"],
             "feed_name": ep["feed_name"],
-            "when": (ep.get("updated_at") or "")[:16],
+            "when": _upload_date(ep.get("upload_date")) if show_all else (ep.get("updated_at") or "")[:16],
+            "status": ep.get("status"),
             "cut_count": len(cuts),
             "removed": sum(c["duration"] for c in cuts),
             "has_transcript": os.path.isfile(transcript_path(config.storage.download_dir, ep["feed_name"], ep["video_id"])),
@@ -77,6 +91,7 @@ async def episodes_page(request: Request, feed: str = ""):
         "items": items,
         "feeds": sorted(f.name for f in config.feeds),
         "selected_feed": feed,
+        "show_all": show_all,
         "keep_data": config.storage.keep_inspection_data,
         "messages": _get_messages(request),
     })
@@ -115,7 +130,10 @@ def _render_episode(request: Request, episode: dict, status_code: int = 200):
         "reprocess": {
             "detect_problem": check_reprocess(config, episode, "detect"),
             "transcribe_problem": check_reprocess(config, episode, "transcribe"),
-            "busy": episode.get("status") != "done",
+            "redownload_problem": check_reprocess(config, episode, "redownload"),
+            "redownload_label": "Re-download and redo everything" if episode.get("status") == "done" else "Download and process",
+            "waiting_for_download": bool(episode.get("redownload_requested")),
+            "busy": episode.get("status") in BUSY_STATUSES or bool(episode.get("redownload_requested")),
             "status_text": STATUS_TEXT.get(episode.get("status"), episode.get("status")),
         },
         "messages": _get_messages(request),
@@ -134,6 +152,25 @@ async def episode_page(request: Request, feed: str, id: str, queued: str = ""):
     return _render_episode(request, episode)
 
 
+def _kick_downloads(app) -> None:
+    """Run the download worker in the background (it skips itself if it is already running)."""
+    import asyncio
+    from siphon import pipeline
+
+    config, db = app.state.config, app.state.db
+
+    async def run() -> None:
+        try:
+            await pipeline.process_downloads(config, db)
+        except Exception:
+            logger.exception("Download run started from the Episodes page failed")
+
+    task = asyncio.create_task(run())
+    tasks = _get_background_tasks(app)
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+
+
 @router.post("/episode/reprocess")
 async def episode_reprocess(request: Request, feed: str = Form(...), id: str = Form(...), mode: str = Form(...)):
     """Send a finished episode back through ad detection (and optionally Whisper) with current settings."""
@@ -146,6 +183,8 @@ async def episode_reprocess(request: Request, feed: str = Form(...), id: str = F
     except ReprocessError as exc:
         _flash(request, str(exc), "error")
         return _render_episode(request, episode, status_code=400)
+    if mode == "redownload":
+        _kick_downloads(request.app)   # start now instead of waiting for the next scheduled run
     return _redirect(request, f"{_episode_url(feed, id)}&queued={quote(mode, safe='')}")
 
 

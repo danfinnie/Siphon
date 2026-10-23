@@ -1,6 +1,7 @@
 """Tests for the web UI routes."""
 
 import asyncio
+from contextlib import asynccontextmanager
 import os
 from unittest.mock import patch
 
@@ -535,3 +536,37 @@ class TestHtmxActions:
         }, headers=HTMX_HEADERS, follow_redirects=False)
         assert resp.status_code == 200
         assert resp.text == ""
+
+
+class TestUIAccessByClientIP:
+    """The UI is open to localhost and Tailnet devices, closed to everyone else."""
+
+    @pytest.fixture
+    def make_client(self, config, tmp_path):
+        @asynccontextmanager
+        async def _make(client_ip):
+            old_cwd = os.getcwd()
+            os.chdir(str(tmp_path))
+            try:
+                with patch.dict("sys.modules", {"apscheduler": None, "apscheduler.schedulers": None, "apscheduler.schedulers.asyncio": None}):
+                    app = create_app(config)
+                    async with app.router.lifespan_context(app):
+                        transport = httpx.ASGITransport(app=app, client=(client_ip, 51234))
+                        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                            yield c
+            finally:
+                os.chdir(old_cwd)
+        return _make
+
+    @pytest.mark.parametrize("ip", ["100.101.102.103", "fd7a:115c:a1e0::1"])
+    async def test_tailnet_device_allowed(self, make_client, ip):
+        async with make_client(ip) as c:
+            resp = await c.get("/ui/")
+        assert resp.status_code == 200
+        assert "Dashboard" in resp.text
+
+    @pytest.mark.parametrize("ip", ["203.0.113.9", "192.168.1.50"])
+    async def test_non_tailnet_device_forbidden(self, make_client, ip):
+        async with make_client(ip) as c:
+            resp = await c.get("/ui/")
+        assert resp.status_code == 403

@@ -252,6 +252,66 @@ async def _reevaluate_duration_unknown(resolved, config, db) -> None:
             log_activity(f"Livestream VOD now available: {vid}", feed=resolved.name)
 
 
+# Filter reasons that depend only on feed config (date cutoff, minimum
+# duration, title excludes). When the config changes, episodes filtered for
+# these reasons are re-checked so e.g. moving date_cutoff earlier picks up
+# episodes that were already discovered and filtered as too_old.
+_CONFIG_FILTER_REASONS = ("too_old", "too_short")
+
+
+def _is_config_filter_reason(reason: str | None) -> bool:
+    if not reason:
+        return False
+    return reason in _CONFIG_FILTER_REASONS or reason.startswith("title_match:")
+
+
+def _reevaluate_config_filtered(resolved, db) -> int:
+    """Re-run config-dependent filters on already-filtered episodes.
+
+    Episodes are only inserted once, so without this a filter decision made
+    under an old config (e.g. a later date_cutoff) sticks forever. Returns
+    the number of episodes moved back to ``pending``.
+    """
+    rows = db.conn.execute(
+        "SELECT video_id, title, duration, upload_date, filter_reason FROM episodes "
+        "WHERE feed_name = ? AND status = 'filtered'",
+        (resolved.name,),
+    ).fetchall()
+
+    block_shorts = resolved.block_shorts if resolved.type == "youtube" else False
+    restored = 0
+    for row in rows:
+        old_reason = row["filter_reason"]
+        if not _is_config_filter_reason(old_reason):
+            continue
+
+        vid = row["video_id"]
+        url = f"https://www.youtube.com/watch?v={vid}" if resolved.type == "youtube" else ""
+        entry = {
+            "id": vid,
+            "title": row["title"] or "",
+            "url": url,
+            "duration": row["duration"],
+            "upload_date": row["upload_date"],
+        }
+        reason = apply_filters(
+            entry, block_shorts, resolved.title_exclude,
+            resolved.min_duration_seconds, resolved.date_cutoff,
+        )
+
+        if reason is None:
+            eligible_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            db.update_episode_status(vid, resolved.name, "pending", filter_reason=None, eligible_at=eligible_at)
+            logger.info("Re-evaluated %s/%s: no longer filtered (was %s)", resolved.name, vid, old_reason)
+            restored += 1
+        elif reason != old_reason:
+            db.update_episode_status(vid, resolved.name, "filtered", filter_reason=reason)
+
+    if restored:
+        log_activity(f"Un-filtered {restored} episodes after config change", feed=resolved.name)
+    return restored
+
+
 def _normalize_youtube_url(url: str) -> str:
     """Ensure a YouTube channel URL points to the /videos tab."""
     # Strip trailing slash
@@ -298,6 +358,7 @@ async def _check_youtube_feed(resolved, config, db) -> None:
 
     # Re-evaluate duration_unknown episodes (livestreams that may now be VODs)
     await _reevaluate_duration_unknown(resolved, config, db)
+    _reevaluate_config_filtered(resolved, db)
 
     # Get known video IDs for this feed to detect where to stop
     # Exclude filtered episodes — they shouldn't block paging to older content
@@ -407,6 +468,7 @@ async def _check_podcast_feed(resolved, db) -> None:
         db.update_feed_image(resolved.name, feed_image_url)
 
     episodes = feed_data.get("episodes") or []
+    _reevaluate_config_filtered(resolved, db)
     new_count = 0
 
     for ep in episodes:

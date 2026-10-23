@@ -460,3 +460,20 @@ class TestOptionalSectionDefaults:
         assert isinstance(cfg.llm, LLMConfig)
         assert cfg.llm.whisper_model == "base"
         assert cfg.llm.confidence_threshold == 0.75
+
+
+class TestDateCutoffNormalization:
+    @pytest.mark.parametrize("raw", ["20260101", "2026-01-01", "2026/01/01", "1/1/26", "01/01/2026"])
+    def test_formats_normalize_to_yyyymmdd(self, raw):
+        from siphon.config import FeedConfig, FeedDefaults
+        assert FeedConfig(name="a", url="https://x", date_cutoff=raw).date_cutoff == "20260101"
+        assert FeedDefaults(date_cutoff=raw).date_cutoff == "20260101"
+
+    def test_yaml_date_object(self):
+        import datetime
+        from siphon.config import FeedConfig
+        assert FeedConfig(name="a", url="https://x", date_cutoff=datetime.date(2026, 1, 1)).date_cutoff == "20260101"
+
+    def test_empty_is_none(self):
+        from siphon.config import FeedConfig
+        assert FeedConfig(name="a", url="https://x", date_cutoff="").date_cutoff is None

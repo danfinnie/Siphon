@@ -242,6 +242,88 @@ class TestCheckFeeds:
         assert feed["last_checked_at"] is not None
 
 
+class TestReevaluateConfigFiltered:
+    """Episodes filtered under an old config get re-checked on feed check."""
+
+    @pytest.fixture()
+    def podcast_db(self, db):
+        db.upsert_feed("pod", "https://example.com/rss", "podcast")
+        return db
+
+    def _rss(self, *eps):
+        return {"title": "Pod", "image_url": None, "episodes": [
+            {"guid": g, "title": t, "audio_url": f"https://example.com/{g}.mp3",
+             "pub_date": d, "duration": 1800, "description": "", "thumbnail_url": None}
+            for g, t, d in eps
+        ]}
+
+    @patch("siphon.podcast.fetch_podcast_rss", return_value=b"")
+    @patch("siphon.podcast.parse_podcast_feed")
+    async def test_earlier_date_cutoff_unfilters_old_podcast_episodes(
+        self, mock_parse, mock_fetch, config, podcast_db
+    ):
+        from siphon.config import resolve_feed
+        from siphon.pipeline import _check_podcast_feed
+
+        mock_parse.return_value = self._rss(
+            ("new", "Newest", "20261023"),
+            ("old", "Older", "20261016"),
+            ("ancient", "Ancient", "20251201"),
+        )
+        fc = FeedConfig(name="pod", url="https://example.com/rss", type="podcast", date_cutoff="20261020")
+        await _check_podcast_feed(resolve_feed(fc, config.defaults), podcast_db)
+        assert podcast_db.get_episode("new", "pod")["status"] == "pending"
+        assert podcast_db.get_episode("old", "pod")["status"] == "filtered"
+        assert podcast_db.get_episode("old", "pod")["filter_reason"] == "too_old"
+
+        # User moves the start date back to 1/1/26
+        fc = FeedConfig(name="pod", url="https://example.com/rss", type="podcast", date_cutoff="1/1/26")
+        await _check_podcast_feed(resolve_feed(fc, config.defaults), podcast_db)
+
+        old = podcast_db.get_episode("old", "pod")
+        assert old["status"] == "pending"
+        assert old["filter_reason"] is None
+        assert old["eligible_at"] is not None
+        assert podcast_db.get_episode("ancient", "pod")["status"] == "filtered"
+
+    def test_title_match_cleared_when_exclude_removed(self, config, db):
+        from siphon.config import resolve_feed
+        from siphon.pipeline import _reevaluate_config_filtered
+
+        db.insert_episode(video_id="v1", feed_name="test-feed", title="Bonus: Q&A",
+                          duration=600, upload_date="20260301", status="filtered",
+                          filter_reason="title_match:bonus")
+        resolved = resolve_feed(config.feeds[0], config.defaults)
+        assert _reevaluate_config_filtered(resolved, db) == 1
+        assert db.get_episode("v1", "test-feed")["status"] == "pending"
+
+    def test_non_config_reasons_untouched(self, config, db):
+        from siphon.config import resolve_feed
+        from siphon.pipeline import _reevaluate_config_filtered
+
+        for vid, reason in (("s1", "short"), ("s2", "duration_unknown"), ("s3", "stale_livestream")):
+            db.insert_episode(video_id=vid, feed_name="test-feed", title="x", duration=600,
+                              upload_date="20260301", status="filtered", filter_reason=reason)
+        resolved = resolve_feed(config.feeds[0], config.defaults)
+        assert _reevaluate_config_filtered(resolved, db) == 0
+        for vid in ("s1", "s2", "s3"):
+            assert db.get_episode(vid, "test-feed")["status"] == "filtered"
+
+    def test_still_filtered_reason_updated(self, config, db):
+        from siphon.config import resolve_feed
+        from siphon.pipeline import _reevaluate_config_filtered
+
+        config.feeds[0] = FeedConfig(name="test-feed", url="https://www.youtube.com/@TestChannel",
+                                     min_duration_seconds=900)
+        db.insert_episode(video_id="v1", feed_name="test-feed", title="x", duration=600,
+                          upload_date="20250101", status="filtered", filter_reason="too_old")
+        resolved = resolve_feed(config.feeds[0], config.defaults)
+        assert _reevaluate_config_filtered(resolved, db) == 0
+        ep = db.get_episode("v1", "test-feed")
+        assert ep["status"] == "filtered"
+        assert ep["filter_reason"] == "too_short"
+
+
 # ------------------------------------------------------------------ #
 # process_downloads
 # ------------------------------------------------------------------ #

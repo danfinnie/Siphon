@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 import textwrap
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional, Union
 
@@ -129,6 +131,28 @@ class LLMConfig(BaseModel):
     claude_concurrency: int = 3
 
 
+def normalize_date_cutoff(v: object) -> str | None:
+    """Coerce a date cutoff to ``YYYYMMDD``.
+
+    Filters compare cutoffs to ``YYYYMMDD`` upload dates as strings, so any
+    other format (``2026-01-01``, ``1/1/26``, a YAML date) silently breaks
+    the comparison. Unrecognized strings are passed through unchanged.
+    """
+    if v is None or v == "":
+        return None
+    if hasattr(v, "strftime"):  # YAML parses bare 2026-01-01 as a date
+        return v.strftime("%Y%m%d")
+    s = str(v).strip()
+    if re.fullmatch(r"\d{8}", s):
+        return s
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y%m%d")
+        except ValueError:
+            continue
+    return s
+
+
 class FeedDefaults(BaseModel):
     mode: Literal["video", "audio"] = "video"
     quality: Quality = 1440
@@ -146,6 +170,11 @@ class FeedDefaults(BaseModel):
     date_cutoff: str | None = None
     title_exclude: list[str] = []
     llm_trim: bool = False
+
+    @field_validator("date_cutoff", mode="before")
+    @classmethod
+    def _validate_date_cutoff(cls, v: object) -> str | None:
+        return normalize_date_cutoff(v)
 
     @field_validator("quality", mode="before")
     @classmethod
@@ -194,6 +223,11 @@ class FeedConfig(BaseModel):
 
     # Pocket Casts private URL (not in FeedDefaults)
     pc_url: Optional[str] = None
+
+    @field_validator("date_cutoff", mode="before")
+    @classmethod
+    def _validate_date_cutoff(cls, v: object) -> str | None:
+        return normalize_date_cutoff(v)
 
     @field_validator("quality", mode="before")
     @classmethod

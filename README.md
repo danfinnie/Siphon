@@ -32,7 +32,7 @@ Built for a very specific stack: **Windows, Tailscale Funnel, Pocket Casts, Clau
 - **YouTube channels** &rarr; discovers videos via YouTube Data API v3, downloads via yt-dlp with your Firefox YouTube Premium session, applies SponsorBlock cuts, runs Whisper transcription + Claude ad detection, serves as a podcast feed
 - **Podcast feeds** &rarr; downloads audio from RSS, runs Whisper + Claude to detect and cut sponsor reads/promos/self-promotion, serves a clean RSS feed
 - **Three-queue pipeline** &rarr; Download &rarr; Whisper &rarr; Claude, each running independently with their own scheduling and concurrency
-- **Web UI** at `localhost:8585/ui/` for feed management, OPML import, live activity monitoring, stats dashboard with insights
+- **Web UI** at `localhost:8585/ui/` (or any Tailnet device) for feed management, OPML import, live activity monitoring, stats dashboard with insights
 - **System tray icon** for pause/resume/quit with adjustable Whisper workers (runs at below-normal CPU priority)
 - **Tailscale Funnel** for HTTPS RSS serving to Pocket Casts, media served over Tailnet only (no auth needed on your network)
 - **Per-feed control** &rarr; toggle SponsorBlock, LLM trim, short blocking per feed; filter by title, duration, date; supplement or fully replace the Claude prompt per feed
@@ -41,7 +41,7 @@ Built for a very specific stack: **Windows, Tailscale Funnel, Pocket Casts, Clau
 
 ## Web UI
 
-Available at `http://localhost:8585/ui/` (localhost only, no auth). Three themes: Light, Dark, Black. SPA-like navigation via htmx.
+Available at `http://localhost:8585/ui/`, or from any device on your Tailnet at `http://<machine>.<tailnet>.ts.net:8585/ui/` (no auth; other IPs get 403). Three themes: Light, Dark, Black. SPA-like navigation via htmx.
 
 - **Dashboard** with system stats, lifetime metrics, and insights (most stale feeds, disk hogs, longest processing, cut stats)
 - **Feed management** — add/edit/delete feeds with all per-feed config options, type-aware forms (YouTube vs podcast)
@@ -233,7 +233,7 @@ flowchart TB
     subgraph Network
         FUNNEL[Tailscale Funnel<br/>HTTPS + Basic Auth]
         TAILNET[Tailscale Network<br/>HTTP, no auth]
-        LOCALHOST[Localhost Only<br/>No auth]
+        LOCALHOST[Localhost + Tailnet<br/>No auth]
     end
 
     subgraph Clients
